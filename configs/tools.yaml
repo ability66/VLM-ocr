@@ -1,0 +1,44 @@
+flowchart2mermaid_manual:
+  enabled: true
+  mode: manual_mermaid
+  manual_dir: "data/flowchart_crops/manual_mermaid"
+  description: "Read manually prepared Mermaid files from data/flowchart_crops/manual_mermaid/{crop_id}.mmd."
+
+diagram2graph_hf:
+  enabled: true
+  mode: builtin_hf
+  model_id: "zackriya/diagram2graph"
+  max_new_tokens: 4096
+  retry_max_new_tokens: 6144
+  description: "Run the Hugging Face diagram-to-graph model on each crop image. Requires GPU plus transformers and qwen-vl-utils."
+
+mineru_pro_image_analysis:
+  enabled: false
+  mode: mineru_http_client
+  server_url: ""
+  description: "Call a running MinerU2.5-Pro service on crop images. The adapter expects mineru_vl_utils plus a reachable server_url."
+
+vlm_json_mermaid:
+  enabled: false
+  mode: external_api
+  provider: "openai_compatible"
+  base_url: ""
+  api_key_env: "OPENAI_API_KEY"
+  model: ""
+  temperature: 0
+  max_tokens: 2048
+  prompt: |
+    You are a flowchart-to-graph extraction model.
+    Analyze the input image and return only valid JSON with this exact schema:
+    {
+      "nodes": [{"id":"","text":"","shape":"","bbox":null}],
+      "edges": [{"source":"","target":"","label":"","direction":""}],
+      "mermaid": ""
+    }
+  description: "Supports OpenAI-compatible multimodal APIs. Gemini can also be used by setting provider=google_gemini and filling base_url/model/api_key_env."
+
+flowextract_external:
+  enabled: false
+  mode: external_cli
+  command: ""
+  description: "External command template. Supported variables: {image_path} {crop_id} {out_dir} {image_name}."

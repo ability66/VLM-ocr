@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+outputs/
+archive/
+
+data/pdfs/
+data/page_images/
+data/page_images_all_pages/
+data/page_images_smoke/
+
+data/flowchart_crops/manual_mermaid/
+
+.DS_Store
