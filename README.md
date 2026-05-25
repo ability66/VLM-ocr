@@ -18,6 +18,13 @@
 - `figure3`: `success`, `13 nodes`, `10 edges`
 - `figure4`: `success`, `10 nodes`, `8 edges`
 
+## 推荐启动方式
+
+如果你只是想换一台服务器快速复测，优先用 Docker：
+
+- Docker 版：环境最稳定，适合迁移到新 GPU 服务器
+- 本机 `uv` 版：适合调试代码和开发
+
 ## 已验证环境
 
 以下是当前这台服务器上实际跑通 `diagram2graph_hf` 的环境：
@@ -61,8 +68,104 @@
 │   └── summarize_flowchart_graph_results.py
 ├── configs/
 │   └── tools.yaml
+├── Dockerfile
+├── compose.yaml
 └── pyproject.toml
 ```
+
+## Docker 运行
+
+这是推荐方式，尤其适合换服务器重测。
+
+### 1. 宿主机前置条件
+
+宿主机需要：
+
+- 已安装 Docker
+- 已安装 NVIDIA 驱动
+- 已安装 `nvidia-container-toolkit`
+
+确认 Docker 能看到 GPU：
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-runtime-ubuntu22.04 nvidia-smi
+```
+
+### 2. 构建镜像
+
+在仓库根目录执行：
+
+```bash
+docker build -t vlm-ocr:latest .
+```
+
+镜像里会安装：
+
+- Python `3.11`
+- `torch 2.6.0 + cu124`
+- `transformers 4.51.2`
+- `accelerate 1.13.0`
+- `qwen-vl-utils 0.0.14`
+
+### 3. 启动容器
+
+#### 方式 A：直接用 `docker run`
+
+```bash
+docker run --rm -it --gpus all \
+  -v "$(pwd)/data/flowchart_crops:/app/data/flowchart_crops" \
+  -v "$(pwd)/data/pdfs:/app/data/pdfs" \
+  -v "$(pwd)/data/page_images:/app/data/page_images" \
+  -v "$(pwd)/outputs:/app/outputs" \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  vlm-ocr:latest
+```
+
+#### 方式 B：用 `docker-compose`
+
+```bash
+docker-compose -f compose.yaml run --rm vlm-ocr
+```
+
+如果你的机器安装的是新版 Compose 插件，也可以：
+
+```bash
+docker compose -f compose.yaml run --rm vlm-ocr
+```
+
+### 4. 容器内单图 smoke test
+
+进入容器后执行：
+
+```bash
+python scripts/run_flowchart_graph_tools.py --tools diagram2graph_hf --crop-id figure1
+```
+
+### 5. 容器内跑全部 crop
+
+```bash
+python scripts/list_flowchart_crops.py
+python scripts/run_flowchart_graph_tools.py --tools diagram2graph_hf
+python scripts/normalize_flowchart_graph_outputs.py --tools diagram2graph_hf
+python scripts/make_flowchart_graph_review.py
+python scripts/summarize_flowchart_graph_results.py
+```
+
+### 6. 宿主机查看结果
+
+结果都在宿主机挂载目录里：
+
+- `outputs/flowchart_graph/raw/`
+- `outputs/flowchart_graph/normalized/`
+- `outputs/flowchart_graph/review/index.html`
+- `outputs/flowchart_graph/reports/flowchart_run_summary.csv`
+
+### 7. Docker 方式的注意点
+
+- 第一次运行 `diagram2graph_hf` 会下载 Hugging Face 模型，第一次最慢
+- 模型缓存通过挂载 `$HOME/.cache/huggingface` 复用，后续运行会快很多
+- 当前镜像默认面向 GPU 推理，不是 CPU-only 镜像
+- 如果宿主机 CUDA 环境和 `cu124` 明显不兼容，需要改 Dockerfile 里的 `torch` 安装命令
 
 ## 从零开始配环境
 
@@ -91,6 +194,13 @@ uv --version
 ```bash
 git clone <your-repo-url>
 cd ocr
+```
+
+当前仓库地址：
+
+```bash
+git clone git@github.com:ability66/VLM-ocr.git
+cd VLM-ocr
 ```
 
 ### 3. 创建虚拟环境
