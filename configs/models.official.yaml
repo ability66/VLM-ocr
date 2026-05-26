@@ -1,0 +1,102 @@
+models:
+  - name: mock_vlm_a
+    provider: mock
+    enabled: false
+    source_type: mock
+    vendor: mock
+
+  - name: mock_vlm_b
+    provider: mock
+    enabled: false
+    source_type: mock
+    vendor: mock
+
+  - name: mock_vlm_c
+    provider: mock
+    enabled: false
+    source_type: mock
+    vendor: mock
+
+  - name: qwen3-vl-plus
+    provider: openai_compatible
+    enabled: true
+    source_type: official
+    vendor: alibaba_dashscope
+    api_key_env: DASHSCOPE_API_KEY
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: qwen3-vl-flash
+    provider: openai_compatible
+    enabled: false
+    source_type: official
+    vendor: alibaba_dashscope
+    api_key_env: DASHSCOPE_API_KEY
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: qwen-vl-max
+    provider: openai_compatible
+    enabled: true
+    source_type: official/
+    vendor: alibaba_dashscope
+    api_key_env: DASHSCOPE_API_KEY
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: doubao-seed-2-0-lite-260215
+    provider: openai_compatible
+    enabled: true
+    source_type: official
+    vendor: volcengine_ark
+    api_key_env: ARK_API_KEY
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: doubao-vision
+    provider: openai_compatible
+    enabled: false
+    source_type: official
+    vendor: volcengine_ark
+    api_key_env: ARK_API_KEY
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: kimi-k2.5
+    provider: openai_compatible
+    enabled: false
+    source_type: official
+    vendor: moonshot
+    api_key_env: MOONSHOT_API_KEY
+    base_url: https://api.moonshot.cn/v1
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120
+
+  - name: glm-4.5v
+    provider: openai_compatible
+    enabled: false
+    source_type: official
+    vendor: zhipu_bigmodel
+    api_key_env: ZHIPUAI_API_KEY
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    supports_vision: true
+    temperature: 0
+    max_tokens: 4096
+    timeout: 120

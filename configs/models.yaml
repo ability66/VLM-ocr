@@ -1,0 +1,48 @@
+models:
+  - name: mock_vlm_a
+    provider: mock
+    enabled: true
+
+  - name: mock_vlm_b
+    provider: mock
+    enabled: true
+
+  - name: mock_vlm_c
+    provider: mock
+    enabled: true
+
+  - name: qwen-vl-max
+    provider: dashscope
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+
+  - name: qwen2.5-vl-72b-instruct
+    provider: dashscope
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+
+  - name: qwen2.5-vl-32b-instruct
+    provider: dashscope
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+
+  - name: qwen2.5-vl-7b-instruct
+    provider: dashscope
+    enabled: false
+    env_key: DASHSCOPE_API_KEY
+
+  - name: gpt-4.1
+    provider: openai
+    enabled: false
+    env_key: OPENAI_API_KEY
+
+  - name: claude-3-7-sonnet
+    provider: anthropic
+    enabled: false
+    env_key: ANTHROPIC_API_KEY
+
+  - name: gemini-2.5-pro
+    provider: gemini
+    enabled: false
+    env_key: GEMINI_API_KEY
+

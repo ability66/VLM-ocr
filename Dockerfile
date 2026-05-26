@@ -1,45 +1,25 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
-    HF_HOME=/root/.cache/huggingface
+    PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    git \
-    ffmpeg \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-ENV PATH="/root/.local/bin:${PATH}"
-
-COPY requirements.txt pyproject.toml uv.lock ./
-
-RUN uv pip install --system torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124 \
-    && uv pip install --system -r requirements.txt
-
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
 COPY configs ./configs
-COPY scripts ./scripts
-COPY data/flowchart_crops ./data/flowchart_crops
-COPY README.md ./
+COPY tests ./tests
 
-RUN mkdir -p \
-    /app/data/pdfs \
-    /app/data/page_images \
-    /app/data/flowchart_crops/manual_mermaid \
-    /app/outputs/flowchart_graph/raw \
-    /app/outputs/flowchart_graph/normalized \
-    /app/outputs/flowchart_graph/review \
-    /app/outputs/flowchart_graph/reports \
-    && python -m compileall scripts
+RUN uv sync --locked --no-dev --extra api
 
-CMD ["bash"]
+VOLUME ["/app/data", "/app/outputs"]
+
+CMD ["uv", "run", "python", "-m", "src.main", "--data-dir", "/app/data", "--output-dir", "/app/outputs"]
