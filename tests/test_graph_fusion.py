@@ -179,6 +179,7 @@ class GraphFusionTests(unittest.TestCase):
         self.assertLess(node.text_consistency, 1.0)
         self.assertIn(node.representative_text, {"是否可以进行增强CT?", "能否增强CT?"})
         self.assertEqual(len(result.nodes), 3)
+        self.assertIn('N002{"', result.mermaid)
 
     def test_visual_reindex_aligns_models_when_node_ids_are_swapped(self) -> None:
         nodes_a = [
@@ -312,6 +313,99 @@ class GraphFusionTests(unittest.TestCase):
         self.assertEqual(consensus.decision, "accepted")
         self.assertNotIn("low_support_edges", consensus.escalation_reasons)
         self.assertNotIn("partial_visual_graph_alignment", consensus.escalation_reasons)
+
+    def test_minor_row_col_drift_becomes_warning_and_does_not_block_acceptance(self) -> None:
+        nodes_a = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.3, 0.05, 0.7, 0.15], "shape": "rectangle", "text": "血压阈值与治疗推荐"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.1, 0.2, 0.25, 0.3], "shape": "rectangle", "text": "正常血压"},
+            {"node_id": "N003", "order_index": 3, "row_index": 2, "col_index": 2, "bbox_hint": [0.3, 0.2, 0.45, 0.3], "shape": "rectangle", "text": "血压升高"},
+            {"node_id": "N004", "order_index": 4, "row_index": 2, "col_index": 3, "bbox_hint": [0.5, 0.2, 0.65, 0.3], "shape": "rectangle", "text": "1级高血压"},
+            {"node_id": "N005", "order_index": 5, "row_index": 2, "col_index": 4, "bbox_hint": [0.7, 0.2, 0.85, 0.3], "shape": "rectangle", "text": "2级高血压"},
+            {"node_id": "N006", "order_index": 6, "row_index": 3, "col_index": 3, "bbox_hint": [0.45, 0.35, 0.65, 0.45], "shape": "diamond", "text": "临床ASCVD或10年CVD风险≥10%"},
+            {"node_id": "N007", "order_index": 7, "row_index": 4, "col_index": 1, "bbox_hint": [0.1, 0.5, 0.25, 0.6], "shape": "rectangle", "text": "鼓励最佳的生活习惯"},
+            {"node_id": "N008", "order_index": 8, "row_index": 4, "col_index": 2, "bbox_hint": [0.3, 0.5, 0.45, 0.6], "shape": "rectangle", "text": "非药物治疗(1级推荐)"},
+            {"node_id": "N009", "order_index": 9, "row_index": 4, "col_index": 4, "bbox_hint": [0.7, 0.5, 0.85, 0.6], "shape": "rectangle", "text": "非药物治疗+降压药物治疗(1级推荐)"},
+        ]
+        nodes_b = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.3, 0.1, 0.7, 0.2], "shape": "rectangle", "text": "血压阈值与治疗推荐"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.1, 0.25, 0.25, 0.35], "shape": "rectangle", "text": "正常血压"},
+            {"node_id": "N003", "order_index": 3, "row_index": 2, "col_index": 2, "bbox_hint": [0.25, 0.25, 0.4, 0.35], "shape": "rectangle", "text": "血压升高"},
+            {"node_id": "N004", "order_index": 4, "row_index": 2, "col_index": 3, "bbox_hint": [0.4, 0.25, 0.55, 0.35], "shape": "rectangle", "text": "1级高血压"},
+            {"node_id": "N005", "order_index": 5, "row_index": 2, "col_index": 4, "bbox_hint": [0.55, 0.25, 0.7, 0.35], "shape": "rectangle", "text": "2级高血压"},
+            {"node_id": "N006", "order_index": 6, "row_index": 3, "col_index": 2, "bbox_hint": [0.35, 0.35, 0.65, 0.45], "shape": "diamond", "text": "临床ASCVD或10年CVD风险≥10%"},
+            {"node_id": "N007", "order_index": 7, "row_index": 4, "col_index": 1, "bbox_hint": [0.1, 0.5, 0.25, 0.6], "shape": "rectangle", "text": "鼓励最佳的生活习惯"},
+            {"node_id": "N008", "order_index": 8, "row_index": 4, "col_index": 2, "bbox_hint": [0.25, 0.5, 0.4, 0.6], "shape": "rectangle", "text": "非药物治疗(1级推荐)"},
+            {"node_id": "N009", "order_index": 9, "row_index": 4, "col_index": 3, "bbox_hint": [0.55, 0.5, 0.7, 0.6], "shape": "rectangle", "text": "非药物治疗+降压药物治疗(1级推荐)"},
+        ]
+        nodes_c = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.26, 0.06, 0.7, 0.17], "shape": "rectangle", "text": "血压阈值与治疗推荐"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.06, 0.23, 0.2, 0.33], "shape": "rectangle", "text": "正常血压"},
+            {"node_id": "N003", "order_index": 3, "row_index": 2, "col_index": 2, "bbox_hint": [0.24, 0.23, 0.38, 0.33], "shape": "rectangle", "text": "血压升高"},
+            {"node_id": "N004", "order_index": 4, "row_index": 2, "col_index": 3, "bbox_hint": [0.46, 0.23, 0.61, 0.33], "shape": "rectangle", "text": "1级高血压"},
+            {"node_id": "N005", "order_index": 5, "row_index": 2, "col_index": 4, "bbox_hint": [0.73, 0.23, 0.87, 0.33], "shape": "rectangle", "text": "2级高血压"},
+            {"node_id": "N006", "order_index": 6, "row_index": 3, "col_index": 3, "bbox_hint": [0.37, 0.36, 0.71, 0.53], "shape": "diamond", "text": "临床ASCVD或10年CVD风险≥10%?"},
+            {"node_id": "N007", "order_index": 7, "row_index": 4, "col_index": 1, "bbox_hint": [0.06, 0.65, 0.2, 0.82], "shape": "rectangle", "text": "鼓励最佳的生活习惯"},
+            {"node_id": "N008", "order_index": 8, "row_index": 4, "col_index": 2, "bbox_hint": [0.24, 0.65, 0.38, 0.82], "shape": "rectangle", "text": "非药物治疗(1级推荐)"},
+            {"node_id": "N009", "order_index": 9, "row_index": 4, "col_index": 4, "bbox_hint": [0.72, 0.65, 0.88, 0.82], "shape": "rectangle", "text": "非药物治疗+降压药物治疗(1级推荐)"},
+        ]
+        edges_a = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N001", "target": "N003", "label": ""},
+            {"source": "N001", "target": "N004", "label": ""},
+            {"source": "N001", "target": "N005", "label": ""},
+            {"source": "N002", "target": "N007", "label": ""},
+            {"source": "N003", "target": "N008", "label": ""},
+            {"source": "N004", "target": "N006", "label": ""},
+            {"source": "N005", "target": "N009", "label": ""},
+            {"source": "N006", "target": "N008", "label": "否"},
+            {"source": "N006", "target": "N009", "label": "是"},
+        ]
+        edges_b = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N001", "target": "N003", "label": ""},
+            {"source": "N001", "target": "N004", "label": ""},
+            {"source": "N001", "target": "N005", "label": ""},
+            {"source": "N002", "target": "N007", "label": ""},
+            {"source": "N003", "target": "N008", "label": ""},
+            {"source": "N004", "target": "N006", "label": ""},
+            {"source": "N005", "target": "N006", "label": ""},
+            {"source": "N006", "target": "N008", "label": "否"},
+            {"source": "N006", "target": "N009", "label": "是"},
+        ]
+        edges_c = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N001", "target": "N003", "label": ""},
+            {"source": "N001", "target": "N004", "label": ""},
+            {"source": "N001", "target": "N005", "label": ""},
+            {"source": "N002", "target": "N007", "label": ""},
+            {"source": "N003", "target": "N008", "label": ""},
+            {"source": "N004", "target": "N006", "label": ""},
+            {"source": "N005", "target": "N009", "label": ""},
+            {"source": "N006", "target": "N008", "label": "否"},
+            {"source": "N006", "target": "N009", "label": "是"},
+        ]
+        labels = [_label(nodes_a, edges_a), _label(nodes_b, edges_b), _label(nodes_c, edges_c)]
+        outputs = [_output("m1"), _output("m2"), _output("m3")]
+
+        result = fuse_mermaid_outputs(labels, outputs, ["血压阈值与治疗推荐"])
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.fusion_status, "fused")
+        self.assertFalse(result.node_alignment_errors)
+        self.assertTrue(any(warning.startswith("col_index_conflict:N009:") for warning in result.warnings))
+        self.assertIn('N006{"', result.mermaid)
+
+        consensus = decide_consensus(
+            image_id="img-1",
+            labels=labels,
+            model_outputs=outputs,
+            score_result=_score_result(),
+            validation_result=_validation_result(),
+            graph_fusion_result=result,
+        )
+        self.assertEqual(consensus.decision, "accepted")
+        self.assertNotIn("node_alignment_errors", consensus.escalation_reasons)
 
     def test_depth_adjusted_reindex_stabilizes_leaf_nodes(self) -> None:
         nodes_a = [

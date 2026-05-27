@@ -251,7 +251,7 @@ def build_fused_mermaid_from_visual_graph(
 
     for node in ordered_nodes:
         text = node.representative_text.strip() or node.fused_id
-        lines.append(f'{node.fused_id}["{_escape_mermaid_text(text)}"]')
+        lines.append(_format_mermaid_node(node_id=node.fused_id, text=text, shape=node.representative_shape))
 
     ordered_edges = sorted(
         edges,
@@ -270,6 +270,17 @@ def build_fused_mermaid_from_visual_graph(
         else:
             lines.append(f"{edge.source} --> {edge.target}")
     return "\n".join(lines)
+
+
+def _format_mermaid_node(node_id: str, text: str, shape: str) -> str:
+    escaped_text = _escape_mermaid_text(text)
+    if shape == "diamond":
+        return f'{node_id}{{"{escaped_text}"}}'
+    if shape == "rounded":
+        return f'{node_id}("{escaped_text}")'
+    if shape == "ellipse":
+        return f'{node_id}(("{escaped_text}"))'
+    return f'{node_id}["{escaped_text}"]'
 
 
 def fuse_mermaid_outputs(
@@ -975,11 +986,11 @@ def _inspect_node_alignment(
     for index, left in enumerate(anchors):
         for right in anchors[index + 1 :]:
             if left.row_index is not None and right.row_index is not None and abs(left.row_index - right.row_index) > 1:
-                errors.append(
+                warnings.append(
                     f"row_index_conflict:{node_id}:{left.model_name}:{right.model_name}"
                 )
             if left.col_index is not None and right.col_index is not None and abs(left.col_index - right.col_index) > 1:
-                errors.append(
+                warnings.append(
                     f"col_index_conflict:{node_id}:{left.model_name}:{right.model_name}"
                 )
             if (

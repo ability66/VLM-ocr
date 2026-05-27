@@ -102,7 +102,7 @@ def decide_consensus(
                 decision = "review"
                 reasons.append("graph fusion has inconsistent node count across models")
                 escalation_reasons.append("inconsistent_node_count")
-            if graph_fusion_result.node_alignment_errors:
+            if _has_hard_node_alignment_errors(graph_fusion_result):
                 decision = "review"
                 reasons.append("graph fusion contains node alignment errors")
                 escalation_reasons.append("node_alignment_errors")
@@ -259,5 +259,14 @@ def _has_inconsistent_node_count(graph_fusion_result: FusedGraphResult) -> bool:
     return any(
         error.startswith("inconsistent_node_count:")
         or error.startswith("inconsistent_node_count_range:")
+        for error in graph_fusion_result.node_alignment_errors
+    )
+
+
+def _has_hard_node_alignment_errors(graph_fusion_result: FusedGraphResult) -> bool:
+    return any(
+        error.startswith("node_position_conflict:")
+        or error in {"node_id_set_mismatch", "non_continuous_selected_node_ids"}
+        or error.startswith("non_continuous_node_ids:")
         for error in graph_fusion_result.node_alignment_errors
     )
