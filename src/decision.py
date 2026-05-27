@@ -74,49 +74,54 @@ def decide_consensus(
             reasons.append("flowchart result cannot be auto-accepted without graph fusion")
             escalation_reasons.append("flowchart_without_graph_fusion")
         else:
-            if graph_fusion_result.graph_confidence < 0.75:
+            if graph_fusion_result.fusion_method == "mermaid_fallback":
+                decision = "review"
+                reasons.append("graph fusion used mermaid fallback instead of visual flowchart_graph")
+                escalation_reasons.append("flowchart_graph_missing_used_mermaid_fallback")
+            elif graph_fusion_result.fusion_method != "visual_order":
+                decision = "review"
+                reasons.append("graph fusion method is not visual_order")
+                escalation_reasons.append("unsupported_graph_fusion_method")
+            if graph_fusion_result.fusion_status == "ambiguous":
+                decision = "review"
+                reasons.append("visual graph alignment is ambiguous")
+                escalation_reasons.append("ambiguous_visual_graph_alignment")
+            elif graph_fusion_result.fusion_status == "partial":
+                decision = "review"
+                reasons.append("visual graph fusion is only partial")
+                escalation_reasons.append("partial_visual_graph_alignment")
+            elif graph_fusion_result.fusion_status == "failed":
+                decision = "review"
+                reasons.append("visual graph fusion failed")
+                escalation_reasons.append("graph_fusion_failed")
+            if graph_fusion_result.graph_confidence < 0.70:
                 decision = "review"
                 reasons.append("graph fusion confidence below acceptance threshold")
                 escalation_reasons.append("low_graph_confidence")
-            if _has_graph_parse_errors(graph_fusion_result):
+            if graph_fusion_result.inconsistent_node_count > 0 or _has_inconsistent_node_count(graph_fusion_result):
                 decision = "review"
-                reasons.append("graph fusion contains mermaid parse errors")
-                escalation_reasons.append("graph_parse_errors")
-            if _has_edge_disagreement(graph_fusion_result):
+                reasons.append("graph fusion has inconsistent node count across models")
+                escalation_reasons.append("inconsistent_node_count")
+            if graph_fusion_result.node_alignment_errors:
                 decision = "review"
-                reasons.append("graph fusion contains edge disagreement")
-                escalation_reasons.append("edge_disagreement")
-            if _has_duplicate_node_texts(graph_fusion_result):
+                reasons.append("graph fusion contains node alignment errors")
+                escalation_reasons.append("node_alignment_errors")
+            if graph_fusion_result.edge_alignment_errors:
                 decision = "review"
-                reasons.append("graph fusion contains duplicate node texts that are unsafe to auto-merge")
-                escalation_reasons.append("duplicate_node_texts")
+                reasons.append("graph fusion contains edge alignment errors")
+                escalation_reasons.append("edge_alignment_errors")
             if not graph_fusion_result.edges:
                 decision = "review"
                 reasons.append("fused graph has no edges")
                 escalation_reasons.append("empty_fused_edges")
             if _has_many_low_support_edges(graph_fusion_result):
                 decision = "review"
-                reasons.append("graph fusion contains many low-support edges")
+                reasons.append("graph fusion contains low-support edges")
                 escalation_reasons.append("low_support_edges")
-            if _has_many_unsupported_graph_claims(graph_fusion_result):
-                decision = "review"
-                reasons.append("graph fusion contains too many unsupported graph claims")
-                escalation_reasons.append("unsupported_graph_claims")
             if graph_fusion_result.critical_errors:
-                remaining_errors = [
-                    error
-                    for error in graph_fusion_result.critical_errors
-                    if error
-                    not in {
-                        "mermaid_parse_errors_present",
-                        "edge_disagreement",
-                        "duplicate_node_texts_present",
-                    }
-                ]
-                if remaining_errors:
-                    decision = "review"
-                    reasons.extend(remaining_errors)
-                    escalation_reasons.append("graph_fusion_critical_errors")
+                decision = "review"
+                reasons.extend(graph_fusion_result.critical_errors)
+                escalation_reasons.append("graph_fusion_critical_errors")
 
     if decision == "review":
         thresholds = _thresholds_for_model_count(total_models=total_models)
@@ -234,36 +239,25 @@ def _deduplicate(values: list[str]) -> list[str]:
 
 
 def _has_many_low_support_edges(graph_fusion_result: FusedGraphResult) -> bool:
-    low_support_count = sum(1 for edge in graph_fusion_result.edges if edge.support_count == 1)
+    low_support_count = len(graph_fusion_result.low_support_edges)
     if low_support_count == 0:
         return False
-    edge_count = len(graph_fusion_result.edges)
-    low_support_ratio = low_support_count / edge_count if edge_count else 0.0
-    return bool(
-        (low_support_count >= 5 and low_support_ratio >= 0.25)
-        or low_support_ratio >= 0.45
+
+    fused_edge_count = len(graph_fusion_result.edges)
+    if fused_edge_count == 0:
+        return True
+
+    total_edge_claims = fused_edge_count + low_support_count
+    if low_support_count >= fused_edge_count:
+        return True
+    if low_support_count >= 3 and (low_support_count / total_edge_claims) >= 0.35:
+        return True
+    return False
+
+
+def _has_inconsistent_node_count(graph_fusion_result: FusedGraphResult) -> bool:
+    return any(
+        error.startswith("inconsistent_node_count:")
+        or error.startswith("inconsistent_node_count_range:")
+        for error in graph_fusion_result.node_alignment_errors
     )
-
-
-def _has_many_unsupported_graph_claims(graph_fusion_result: FusedGraphResult) -> bool:
-    warnings = list(graph_fusion_result.warnings)
-    unsupported_node_count = sum(
-        1 for warning in warnings if warning.startswith("unsupported_node:")
-    )
-    unsupported_edge_node_count = sum(
-        1 for warning in warnings if warning.startswith("unsupported_edge_nodes:")
-    )
-    total_unsupported = unsupported_node_count + unsupported_edge_node_count
-    return total_unsupported >= 4 or unsupported_edge_node_count >= 3
-
-
-def _has_graph_parse_errors(graph_fusion_result: FusedGraphResult) -> bool:
-    return "mermaid_parse_errors_present" in set(graph_fusion_result.critical_errors)
-
-
-def _has_edge_disagreement(graph_fusion_result: FusedGraphResult) -> bool:
-    return "edge_disagreement" in set(graph_fusion_result.critical_errors)
-
-
-def _has_duplicate_node_texts(graph_fusion_result: FusedGraphResult) -> bool:
-    return "duplicate_node_texts_present" in set(graph_fusion_result.critical_errors)

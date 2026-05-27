@@ -22,6 +22,7 @@ VALID_STRUCTURED_KINDS = {"none", "table", "mermaid", "text"}
 VALID_STRUCTURED_FORMATS = {"markdown", "csv", "mermaid", "plain_text", "none"}
 VALID_CAPTION_SOURCES = {"generated"}
 VALID_CONFIDENCE = {"low", "medium", "high"}
+VALID_FLOWCHART_SHAPES = {"rectangle", "diamond", "ellipse", "rounded", "unknown"}
 VISUAL_TYPE_SYNONYMS = {
     "流程图": "flowchart",
     "图表": "chart",
@@ -50,7 +51,7 @@ def normalize_model_output(
         return model_output, None
 
     cleaned_text = _strip_code_fences(model_output.raw_text)
-    json_text = _extract_first_json_object(cleaned_text)
+    json_text, recovered_truncated_json = _extract_first_json_object(cleaned_text)
     if json_text is None:
         updated = model_output.model_copy(deep=True)
         updated.error = _merge_errors(updated.error, "Failed to locate JSON object in model output")
@@ -67,6 +68,9 @@ def normalize_model_output(
         updated = model_output.model_copy(deep=True)
         updated.error = _merge_errors(updated.error, "Model output JSON is not an object")
         return updated, None
+
+    if recovered_truncated_json:
+        payload["warnings"] = _append_warning(payload.get("warnings"), "recovered_truncated_json_output")
 
     normalized = _normalize_payload(payload)
     updated = model_output.model_copy(deep=True)
@@ -113,6 +117,12 @@ def _normalize_payload(payload: dict[str, Any]) -> ParsedLabel:
         image_type=image_type,
         warnings=warnings,
     )
+    flowchart_graph = _normalize_flowchart_graph(
+        value=payload.get("flowchart_graph"),
+        structured_kind=kind,
+        structured_content=str(structured_input.get("content", "") or "").strip(),
+        warnings=warnings,
+    )
     if not caption and caption_structured.brief:
         caption = caption_structured.brief
         warnings.append("caption filled from caption_structured.brief")
@@ -126,6 +136,7 @@ def _normalize_payload(payload: dict[str, Any]) -> ParsedLabel:
             content=str(structured_input.get("content", "") or "").strip(),
             format=output_format,
         ),
+        flowchart_graph=flowchart_graph,
         visible_text=visible_text,
         uncertainty=str(payload.get("uncertainty", "") or "").strip(),
         warnings=warnings,
@@ -150,6 +161,182 @@ def _infer_format_from_kind(kind: str) -> str:
     if kind == "none":
         return "none"
     return "plain_text"
+
+
+def _normalize_flowchart_graph(
+    value: Any,
+    structured_kind: str,
+    structured_content: str,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    if value is None:
+        return _derive_flowchart_graph_from_mermaid_if_needed(
+            structured_kind=structured_kind,
+            structured_content=structured_content,
+            warnings=warnings,
+        )
+
+    if not isinstance(value, dict):
+        warnings.append("flowchart_graph normalized from non-object to None")
+        return _derive_flowchart_graph_from_mermaid_if_needed(
+            structured_kind=structured_kind,
+            structured_content=structured_content,
+            warnings=warnings,
+        )
+
+    nodes_input = value.get("nodes")
+    edges_input = value.get("edges")
+    nodes_raw = nodes_input if isinstance(nodes_input, list) else []
+    edges_raw = edges_input if isinstance(edges_input, list) else []
+
+    raw_id_map: dict[str, str] = {}
+    normalized_nodes: list[dict[str, Any]] = []
+    for index, item in enumerate(nodes_raw, start=1):
+        node_payload = item if isinstance(item, dict) else {}
+        raw_node_id = str(node_payload.get("node_id", "") or "").strip()
+        order_index = _coerce_positive_int(node_payload.get("order_index"))
+        node_id = _normalize_flowchart_node_id(
+            raw_value=raw_node_id,
+            fallback_index=order_index or index,
+        )
+        if node_id is None:
+            warnings.append(f"flowchart_graph node_id missing at node index {index}")
+            node_id = f"N{index:03d}"
+        if order_index is None:
+            order_index = _extract_node_index(node_id)
+
+        row_index = _coerce_positive_int(node_payload.get("row_index"))
+        col_index = _coerce_positive_int(node_payload.get("col_index"))
+        bbox_hint = _normalize_bbox_hint(node_payload.get("bbox_hint"))
+        shape = _normalize_flowchart_shape(node_payload.get("shape"))
+        text = str(node_payload.get("text", "") or "").strip()
+
+        if raw_node_id:
+            raw_id_map[raw_node_id] = node_id
+        raw_id_map[node_id] = node_id
+        if order_index is not None:
+            raw_id_map[str(order_index)] = node_id
+
+        normalized_nodes.append(
+            {
+                "node_id": node_id,
+                "order_index": order_index,
+                "row_index": row_index,
+                "col_index": col_index,
+                "bbox_hint": bbox_hint,
+                "shape": shape,
+                "text": text,
+            }
+        )
+
+    normalized_edges: list[dict[str, Any]] = []
+    for item in edges_raw:
+        edge_payload = item if isinstance(item, dict) else {}
+        source = _normalize_flowchart_edge_ref(edge_payload.get("source"), raw_id_map)
+        target = _normalize_flowchart_edge_ref(edge_payload.get("target"), raw_id_map)
+        if source is None or target is None:
+            warnings.append("flowchart_graph edge with invalid source/target was dropped")
+            continue
+        normalized_edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": str(edge_payload.get("label", "") or "").strip(),
+            }
+        )
+
+    graph_source = str(value.get("graph_source", "") or "").strip().lower()
+    if graph_source != "mermaid_fallback":
+        graph_source = "model"
+
+    node_order_rule = str(
+        value.get("node_order_rule", "top_to_bottom_left_to_right") or "top_to_bottom_left_to_right"
+    ).strip()
+    return {
+        "node_order_rule": node_order_rule,
+        "nodes": normalized_nodes,
+        "edges": normalized_edges,
+        "graph_source": graph_source,
+        "weak_candidate": bool(value.get("weak_candidate", False) or graph_source == "mermaid_fallback"),
+    }
+
+
+def _derive_flowchart_graph_from_mermaid_if_needed(
+    structured_kind: str,
+    structured_content: str,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    if structured_kind != "mermaid" or not structured_content.strip():
+        return None
+
+    from src.graph_fusion import extract_weak_flowchart_graph_from_mermaid
+
+    derived = extract_weak_flowchart_graph_from_mermaid(structured_content)
+    if derived is not None:
+        warnings.append("flowchart_graph missing; derived weak mermaid fallback graph")
+    return derived
+
+
+def _normalize_flowchart_node_id(raw_value: Any, fallback_index: int | None = None) -> str | None:
+    if raw_value is None:
+        raw_text = ""
+    else:
+        raw_text = str(raw_value).strip()
+
+    digits = re.findall(r"\d+", raw_text)
+    if digits:
+        return f"N{int(digits[0]):03d}"
+    if fallback_index is not None and fallback_index > 0:
+        return f"N{fallback_index:03d}"
+    return None
+
+
+def _normalize_flowchart_edge_ref(
+    raw_value: Any,
+    raw_id_map: dict[str, str],
+) -> str | None:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return None
+    if raw_text in raw_id_map:
+        return raw_id_map[raw_text]
+    return _normalize_flowchart_node_id(raw_text)
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _extract_node_index(node_id: str) -> int | None:
+    matches = re.findall(r"\d+", str(node_id or ""))
+    if not matches:
+        return None
+    return int(matches[0])
+
+
+def _normalize_bbox_hint(value: Any) -> list[float] | None:
+    if value is None or not isinstance(value, list) or len(value) != 4:
+        return None
+
+    normalized: list[float] = []
+    for item in value:
+        try:
+            parsed = float(item)
+        except (TypeError, ValueError):
+            return None
+        normalized.append(round(min(1.0, max(0.0, parsed)), 4))
+    return normalized
+
+
+def _normalize_flowchart_shape(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_FLOWCHART_SHAPES:
+        return normalized
+    return "unknown"
 
 
 def _normalize_caption_structured(
@@ -530,10 +717,10 @@ def _strip_code_fences(text: str) -> str:
     return cleaned.strip()
 
 
-def _extract_first_json_object(text: str) -> str | None:
+def _extract_first_json_object(text: str) -> tuple[str | None, bool]:
     start = text.find("{")
     if start == -1:
-        return None
+        return None, False
 
     depth = 0
     in_string = False
@@ -556,8 +743,119 @@ def _extract_first_json_object(text: str) -> str | None:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return text[start : index + 1]
+                return text[start : index + 1], False
+
+    repaired = _recover_truncated_json_object(text[start:])
+    if repaired is not None:
+        return repaired, True
+    return None, False
+
+
+def _recover_truncated_json_object(text: str) -> str | None:
+    cut_positions = _json_repair_cut_positions(text)
+    for cut_position in sorted(cut_positions, reverse=True):
+        prefix = text[:cut_position].rstrip()
+        if not prefix or prefix == "{":
+            continue
+        candidate = _close_truncated_json(prefix)
+        if not candidate:
+            continue
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            continue
     return None
+
+
+def _json_repair_cut_positions(text: str) -> set[int]:
+    positions = {len(text)}
+    in_string = False
+    escape = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == ",":
+            positions.add(index)
+        elif char in "}]":
+            positions.add(index + 1)
+    return positions
+
+
+def _close_truncated_json(prefix: str) -> str | None:
+    candidate = prefix.rstrip()
+    if not candidate:
+        return None
+
+    for _ in range(5):
+        stack, in_string, escape = _scan_json_state(candidate)
+        if escape and candidate:
+            candidate = candidate[:-1].rstrip()
+            continue
+        if in_string:
+            candidate = f'{candidate}"'
+
+        candidate = candidate.rstrip()
+        while candidate and candidate[-1] in ",:":
+            candidate = candidate[:-1].rstrip()
+
+        stack, in_string, escape = _scan_json_state(candidate)
+        if escape and candidate:
+            candidate = candidate[:-1].rstrip()
+            continue
+        if in_string:
+            candidate = f'{candidate}"'
+        candidate = candidate.rstrip()
+        while candidate and candidate[-1] in ",:":
+            candidate = candidate[:-1].rstrip()
+
+        if not candidate:
+            return None
+
+        stack, _, _ = _scan_json_state(candidate)
+        closing_chars = "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+        return candidate + closing_chars
+    return None
+
+
+def _scan_json_state(text: str) -> tuple[list[str], bool, bool]:
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif char == "]" and stack and stack[-1] == "[":
+            stack.pop()
+    return stack, in_string, escape
+
+
+def _append_warning(value: Any, warning: str) -> list[str]:
+    warnings = _normalize_string_list(value)
+    warnings.append(warning)
+    return warnings
 
 
 def _merge_errors(existing: str | None, new_error: str) -> str:

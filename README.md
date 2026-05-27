@@ -99,7 +99,7 @@ docker run --rm \
     --output-dir /app/outputs \
     --models-config configs/models.official.yaml \
     --prompts-config configs/prompts.yaml \
-    --concurrent-models 2 \
+    --concurrent-models 3\
     --retry 1
 ```
 

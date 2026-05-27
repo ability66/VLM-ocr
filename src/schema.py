@@ -115,6 +115,7 @@ class ParsedLabel(BaseModel):
     caption: str = ""
     caption_structured: CaptionStructured = Field(default_factory=CaptionStructured)
     structured_label: StructuredLabel = Field(default_factory=StructuredLabel)
+    flowchart_graph: dict[str, Any] | None = None
     visible_text: list[str] = Field(default_factory=list)
     uncertainty: str = ""
     warnings: list[str] = Field(default_factory=list)

@@ -103,6 +103,8 @@ def build_summary_record(
     graph_fusion = graph_fusion or {"enabled": False}
     node_vote_details = list(graph_fusion.get("node_vote_details", []))
     edge_vote_details = list(graph_fusion.get("edge_vote_details", []))
+    low_support_edges = list(graph_fusion.get("low_support_edges", []))
+    low_text_nodes = list(graph_fusion.get("low_text_consistency_nodes", []))
     return {
         "image_id": image_task.image_id,
         "file_name": image_task.file_name,
@@ -125,15 +127,17 @@ def build_summary_record(
         "validation_warnings": consensus.validation_warnings,
         "escalation_reasons": consensus.escalation_reasons,
         "graph_fusion_enabled": bool(graph_fusion.get("enabled", False)),
+        "graph_fusion_method": graph_fusion.get("fusion_method", "none"),
+        "graph_fusion_status": graph_fusion.get("fusion_status", "failed"),
         "graph_confidence": float(graph_fusion.get("graph_confidence", 0.0) or 0.0),
-        "fused_node_count": len(node_vote_details),
-        "fused_edge_count": len(edge_vote_details),
+        "fused_node_count": int(graph_fusion.get("fused_node_count", len(node_vote_details)) or 0),
+        "fused_edge_count": int(graph_fusion.get("fused_edge_count", len(edge_vote_details)) or 0),
+        "inconsistent_node_count": int(graph_fusion.get("inconsistent_node_count", 0) or 0),
         "low_support_node_count": sum(
             1 for node in node_vote_details if int(node.get("support_count", 0) or 0) == 1
         ),
-        "low_support_edge_count": sum(
-            1 for edge in edge_vote_details if int(edge.get("support_count", 0) or 0) == 1
-        ),
+        "low_support_edge_count": len(low_support_edges),
+        "low_text_consistency_node_count": len(low_text_nodes),
         "graph_fusion_warnings": list(graph_fusion.get("warnings", [])),
         "graph_fusion_errors": list(graph_fusion.get("critical_errors", [])),
     }
@@ -280,18 +284,50 @@ def build_graph_fusion_payload(
     mermaid_count = sum(
         1
         for label in paired_labels
-        if label.structured_label.kind == "mermaid" and label.structured_label.content.strip()
+        if (
+            (isinstance(label.flowchart_graph, dict) and label.flowchart_graph.get("nodes"))
+            or (label.structured_label.kind == "mermaid" and label.structured_label.content.strip())
+        )
     )
     del model_outputs
 
+    base_payload = {
+        "enabled": False,
+        "fusion_method": "none",
+        "fusion_status": "failed",
+        "graph_confidence": 0.0,
+        "fused_node_count": 0,
+        "fused_edge_count": 0,
+        "inconsistent_node_count": 0,
+        "node_alignment_errors": [],
+        "edge_alignment_errors": [],
+        "low_support_edges": [],
+        "low_text_consistency_nodes": [],
+        "warnings": [],
+        "critical_errors": [],
+        "node_vote_details": [],
+        "edge_vote_details": [],
+    }
+
     if majority_type != "flowchart":
-        return {"enabled": False, "reason": "not flowchart"}
+        base_payload["reason"] = "not flowchart"
+        return base_payload
     if mermaid_count < 2 or graph_fusion_result is None:
-        return {"enabled": False, "reason": "not enough mermaid outputs"}
+        base_payload["reason"] = "not enough flowchart graph outputs"
+        return base_payload
 
     return {
         "enabled": True,
+        "fusion_method": graph_fusion_result.fusion_method,
+        "fusion_status": graph_fusion_result.fusion_status,
         "graph_confidence": graph_fusion_result.graph_confidence,
+        "fused_node_count": len(graph_fusion_result.nodes),
+        "fused_edge_count": len(graph_fusion_result.edges),
+        "inconsistent_node_count": graph_fusion_result.inconsistent_node_count,
+        "node_alignment_errors": list(graph_fusion_result.node_alignment_errors),
+        "edge_alignment_errors": list(graph_fusion_result.edge_alignment_errors),
+        "low_support_edges": list(graph_fusion_result.low_support_edges),
+        "low_text_consistency_nodes": list(graph_fusion_result.low_text_consistency_nodes),
         "node_vote_details": list(graph_fusion_result.node_vote_details),
         "edge_vote_details": list(graph_fusion_result.edge_vote_details),
         "warnings": list(graph_fusion_result.warnings),

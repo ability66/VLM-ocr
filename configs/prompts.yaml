@@ -43,6 +43,21 @@ default_prompt: |
   - 连线、分叉、汇合、箭头方向只能依据图中明确可见的箭头或连接线判断；看不清时宁可少连，不要猜连，不要按语义补边。
   - 如果多个节点共享同一个可见分叉点或汇合点，可以使用无标签中间节点表达这种连接关系，但不要把共享连接点臆造成多条并不存在的直接边。
   - 如果流程图局部连线不可辨认，优先保持已确认节点和可见边的正确性，不要为了完整而虚构拓扑。
+  - 如果图像是流程图，必须额外输出 flowchart_graph 字段。
+  - 对流程图，必须先按视觉顺序枚举所有节点：整体页面坐标从上到下、同一行从左到右；即使存在泳道、分栏或左右分支，也仍按全页坐标顺序编号。
+  - 流程图节点编号只能使用 N001、N002、N003 ...；Mermaid 必须使用同一套 node_id，不允许使用 A/B/C 或自定义 ID。
+  - flowchart_graph.nodes 中每个节点必须输出：
+    {"node_id":"N001","order_index":1,"row_index":1,"col_index":1,"bbox_hint":[x1,y1,x2,y2],"shape":"rectangle | diamond | ellipse | rounded | unknown","text":"节点内可见文字"}
+  - bbox_hint 使用相对坐标，范围 0 到 1，分别表示左上角和右下角的大致位置；不要求像素级精确，但必须大致反映节点位置；如果无法判断，填 null。
+  - flowchart_graph.edges 中每条边必须输出：
+    {"source":"N001","target":"N002","label":"是/否/..."}
+  - 对流程图，structured_label.content 中的 Mermaid 也必须使用同一套 N001/N002 编号，例如：
+    flowchart TD
+      N001["开始"]
+      N002["是否满足条件?"]
+      N001 --> N002
+      N002 -->|是| N003
+  - 如果不是流程图，flowchart_graph 输出 null。
 
   必须只输出 JSON。
   不要输出 Markdown。
@@ -68,6 +83,27 @@ default_prompt: |
       "kind": "...",
       "content": "...",
       "format": "..."
+    },
+    "flowchart_graph": {
+      "node_order_rule": "top_to_bottom_left_to_right",
+      "nodes": [
+        {
+          "node_id": "N001",
+          "order_index": 1,
+          "row_index": 1,
+          "col_index": 1,
+          "bbox_hint": [0.1, 0.1, 0.3, 0.2],
+          "shape": "rectangle",
+          "text": "..."
+        }
+      ],
+      "edges": [
+        {
+          "source": "N001",
+          "target": "N002",
+          "label": ""
+        }
+      ]
     },
     "visible_text": ["..."],
     "uncertainty": "...",
