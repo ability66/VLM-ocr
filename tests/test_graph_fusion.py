@@ -4,10 +4,13 @@ import json
 import unittest
 
 from src.decision import decide_consensus
+from src.graph_fusion import FusedGraphResult
 from src.graph_fusion import fuse_mermaid_outputs
 from src.normalizer import normalize_model_output
-from src.schema import CaptionStructured, ModelOutput, ParsedLabel, StructuredLabel
+from src.schema import CaptionStructured, ModelOutput, OcrRegion, ParsedLabel, StructuredLabel
+from src.scorer import score_consensus
 from src.validators.validation import ValidationResult
+from src.validators import validate_labels
 from src.writer import build_final_label_record
 
 
@@ -655,6 +658,133 @@ class GraphFusionTests(unittest.TestCase):
         )
         self.assertEqual(consensus.decision, "review")
         self.assertIn("flowchart_graph_missing_used_mermaid_fallback", consensus.escalation_reasons)
+
+    def test_flowchart_title_ocr_does_not_trigger_seal_review(self) -> None:
+        labels = [
+            _label(
+                nodes=[
+                    {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"},
+                    {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "结束"},
+                ],
+                edges=[{"source": "N001", "target": "N002", "label": ""}],
+            ),
+            _label(
+                nodes=[
+                    {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"},
+                    {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "结束"},
+                ],
+                edges=[{"source": "N001", "target": "N002", "label": ""}],
+            ),
+            _label(
+                nodes=[
+                    {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"},
+                    {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "结束"},
+                ],
+                edges=[{"source": "N001", "target": "N002", "label": ""}],
+            ),
+        ]
+        for label in labels:
+            label.caption = "治疗流程图"
+            label.caption_structured.brief = "治疗流程图"
+            label.structured_label.kind = "mermaid"
+            label.structured_label.format = "mermaid"
+            label.structured_label.content = "flowchart TD\nN001[开始] --> N002[结束]"
+            label.ocr_regions = [
+                OcrRegion(role="title", text="图1 治疗流程图", bbox_hint=[0.1, 0.8, 0.9, 0.9]),
+                OcrRegion(role="footer", text="Figure 1 Treatment flowchart", bbox_hint=[0.1, 0.9, 0.9, 0.98]),
+            ]
+
+        outputs = [_output("m1"), _output("m2"), _output("m3")]
+        graph_result = fuse_mermaid_outputs(labels, outputs, ["开始", "结束"])
+        assert graph_result is not None
+
+        score_result = score_consensus("img-1", labels, outputs)
+        validation_result = validate_labels("img-1", labels)
+        consensus = decide_consensus(
+            image_id="img-1",
+            labels=labels,
+            model_outputs=outputs,
+            score_result=score_result,
+            validation_result=validation_result,
+            graph_fusion_result=graph_result,
+        )
+
+        self.assertFalse(score_result["has_seal_regions"])
+        self.assertEqual(consensus.decision, "accepted")
+        self.assertNotIn("low_seal_agreement", consensus.escalation_reasons)
+        self.assertFalse(
+            any("primary seal text" in error for error in consensus.validation_errors)
+        )
+
+    def test_high_consensus_partial_flowchart_can_be_accepted(self) -> None:
+        labels = [
+            _label(
+                nodes=[{"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"}],
+                edges=[],
+            ),
+            _label(
+                nodes=[{"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"}],
+                edges=[],
+            ),
+            _label(
+                nodes=[{"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"}],
+                edges=[],
+            ),
+        ]
+        outputs = [_output("m1"), _output("m2"), _output("m3")]
+        graph_result = FusedGraphResult(
+            fusion_method="visual_order",
+            fusion_status="partial",
+            graph_confidence=0.4978,
+            nodes=[],
+            edges=[
+                type("Edge", (), {"source": f"N{index:03d}", "target": f"N{index+1:03d}"})()
+                for index in range(1, 14)
+            ],
+            inconsistent_node_count=1,
+            node_alignment_errors=[
+                "node_position_conflict:N010:m1:m2",
+                "node_position_conflict:N010:m2:m3",
+            ],
+            edge_alignment_errors=[],
+            low_support_edges=[
+                {"source": "N003", "target": "N007"},
+                {"source": "N004", "target": "N008"},
+                {"source": "N005", "target": "N009"},
+                {"source": "N006", "target": "N010"},
+                {"source": "N007", "target": "N010"},
+                {"source": "N008", "target": "N011"},
+                {"source": "N009", "target": "N011"},
+                {"source": "N010", "target": "N011"},
+            ],
+            low_text_consistency_nodes=["N008", "N009", "N010", "N011"],
+        )
+        score_result = {
+            "type_agreement": 1.0,
+            "caption_agreement": 0.8113,
+            "structure_agreement": 0.9645,
+            "seal_agreement": 1.0,
+            "has_seal_regions": False,
+            "overall_score": 0.9292,
+            "reasons": [],
+        }
+        validation_result = ValidationResult(
+            image_id="img-1",
+            evidence_score=1.0,
+            validator_score=1.0,
+            hallucination_risk=0.0,
+        )
+
+        consensus = decide_consensus(
+            image_id="img-1",
+            labels=labels,
+            model_outputs=outputs,
+            score_result=score_result,
+            validation_result=validation_result,
+            graph_fusion_result=graph_result,
+        )
+
+        self.assertEqual(consensus.decision, "accepted")
 
     def test_build_final_label_record_is_slim(self) -> None:
         final_label = {

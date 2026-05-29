@@ -8,6 +8,7 @@ default_prompt: |
   - 不允许把图中所有文字、所有分支或整段 OCR 内容塞进 caption。
   - 如果图中包含文字，只概括主题或对象，不要长篇展开局部细节。
   - 不要虚构看不见的信息。
+  - 如果图像主体是单个公章/印章/盖章区域，caption 只输出主印章名或公司/机构名；不要描述颜色、形状、五角星、党徽、背景纸张、手写字、数字编号等细节。
 
   第二级：caption_structured
   - 必须输出 caption_structured。
@@ -24,7 +25,22 @@ default_prompt: |
   - caption_source 固定输出 generated。
   - confidence 只能取 low / medium / high。
 
-  第三级：structured_label
+  第三级：ocr_regions
+  - 必须输出 ocr_regions 数组；没有可识别区域时输出空数组 []。
+  - 当图中存在印章、骑缝章、盖章文本、水印、页脚/底部说明文字时，必须优先把这些文字放进 ocr_regions，而不是混在一个笼统的 visible_text 里。
+  - ocr_regions 每项格式必须为：
+    {"role":"seal | watermark | footer | body | title | other","text":"可见原文","bbox_hint":[x1,y1,x2,y2],"confidence":"low | medium | high"}
+  - role=seal 只用于印章/盖章内部的可见文字；绝对不要把印章外侧的正文、水印、页脚、底部说明、签名或表格文字并入 seal。
+  - role=watermark 只用于半透明或背景水印文字。
+  - role=footer 只用于图像底部、页脚、页码或底部说明文字。
+  - role=body 用于正文区域文字；role=title 用于明确可见标题；无法归类再用 other。
+  - 对 role=seal，text 必须逐字转写，不能错字、不能漏字、不能多字、不能改写、不能翻译、不能根据常识补全。
+  - 对 role=seal，如果看不清，就保守输出能确认的文字，并把 confidence 设为 low；不要猜测模糊字。
+  - 如果 seal 与 watermark/footer/bottom text 贴得很近，也必须按可见边界拆分，不能混成一个区域。
+  - bbox_hint 使用相对坐标，范围 0 到 1；不要求像素级精确，但要大致反映区域位置；无法判断时填 null。
+  - 如果图像主体是单个公章/印章，优先在 ocr_regions 中保留调试信息；最终交付只需要 caption 里的主印章名。
+
+  第四级：structured_label
   - 先判断图像类型 image_type。
   - image_type 只能取以下值之一：natural_image / chart / table / flowchart / document / screenshot / diagram / mixed / unknown。
   - structured_label.kind 只能取以下值之一：none / table / mermaid / text。
@@ -33,6 +49,7 @@ default_prompt: |
   - 如果是表格 table，尽量转写成 markdown 表格。
   - 如果是流程图 flowchart 且可以可靠结构化，structured_label.kind 必须设为 mermaid，structured_label.format 必须设为 mermaid，structured_label.content 第一行必须是 flowchart TD。
   - 如果是普通自然图像，structured_label.kind 设为 none。
+  - 如果图像主体是单个公章/印章且不需要结构化表达，structured_label.kind 设为 none，structured_label.format 设为 none，structured_label.content 留空字符串。
   - 如果无法可靠结构化，structured_label.kind 设为 text，structured_label.format 设为 plain_text，并说明原因。
   - 对流程图，原则上一个可见框/节点形状只对应一个 Mermaid 节点；不要把多个独立可见框合并成一个节点。
   - 如果一个可见框内部本来就是多行文字，仍然只输出一个 Mermaid 节点；不要把同一框内的多行文字拆成多个连续节点。
@@ -105,6 +122,14 @@ default_prompt: |
         }
       ]
     },
+    "ocr_regions": [
+      {
+        "role": "seal",
+        "text": "...",
+        "bbox_hint": [0.1, 0.7, 0.3, 0.9],
+        "confidence": "high"
+      }
+    ],
     "visible_text": ["..."],
     "uncertainty": "...",
     "warnings": ["..."]

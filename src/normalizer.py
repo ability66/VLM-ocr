@@ -5,7 +5,7 @@ import re
 import unicodedata
 from typing import Any
 
-from src.schema import CaptionStructured, ModelOutput, ParsedLabel, StructuredLabel
+from src.schema import CaptionStructured, ModelOutput, OcrRegion, ParsedLabel, StructuredLabel
 
 VALID_IMAGE_TYPES = {
     "natural_image",
@@ -23,6 +23,7 @@ VALID_STRUCTURED_FORMATS = {"markdown", "csv", "mermaid", "plain_text", "none"}
 VALID_CAPTION_SOURCES = {"generated"}
 VALID_CONFIDENCE = {"low", "medium", "high"}
 VALID_FLOWCHART_SHAPES = {"rectangle", "diamond", "ellipse", "rounded", "unknown"}
+VALID_OCR_REGION_ROLES = {"seal", "watermark", "footer", "body", "title", "other"}
 VISUAL_TYPE_SYNONYMS = {
     "流程图": "flowchart",
     "图表": "chart",
@@ -33,6 +34,23 @@ VISUAL_TYPE_SYNONYMS = {
     "自然图像": "natural_image",
     "混合": "mixed",
     "未知": "unknown",
+}
+OCR_REGION_ROLE_SYNONYMS = {
+    "印章": "seal",
+    "公章": "seal",
+    "stamp": "seal",
+    "seal": "seal",
+    "水印": "watermark",
+    "watermark": "watermark",
+    "底部文字": "footer",
+    "页脚": "footer",
+    "footer": "footer",
+    "正文": "body",
+    "body": "body",
+    "标题": "title",
+    "title": "title",
+    "其他": "other",
+    "other": "other",
 }
 TITLE_PATTERNS = (
     re.compile(r"^(图|表)\s*\d+", re.IGNORECASE),
@@ -123,6 +141,7 @@ def _normalize_payload(payload: dict[str, Any]) -> ParsedLabel:
         structured_content=str(structured_input.get("content", "") or "").strip(),
         warnings=warnings,
     )
+    ocr_regions = _normalize_ocr_regions(payload.get("ocr_regions"), warnings)
     if not caption and caption_structured.brief:
         caption = caption_structured.brief
         warnings.append("caption filled from caption_structured.brief")
@@ -138,6 +157,7 @@ def _normalize_payload(payload: dict[str, Any]) -> ParsedLabel:
         ),
         flowchart_graph=flowchart_graph,
         visible_text=visible_text,
+        ocr_regions=ocr_regions,
         uncertainty=str(payload.get("uncertainty", "") or "").strip(),
         warnings=warnings,
     )
@@ -337,6 +357,50 @@ def _normalize_flowchart_shape(value: Any) -> str:
     if normalized in VALID_FLOWCHART_SHAPES:
         return normalized
     return "unknown"
+
+
+def _normalize_ocr_regions(value: Any, warnings: list[str]) -> list[OcrRegion]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        warnings.append("ocr_regions normalized from non-list to empty list")
+        return []
+
+    normalized_regions: list[OcrRegion] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            warnings.append(f"ocr_regions item at index {index} dropped because it is not an object")
+            continue
+
+        raw_role = str(item.get("role", "other") or "").strip().lower()
+        role = OCR_REGION_ROLE_SYNONYMS.get(raw_role, raw_role)
+        if role not in VALID_OCR_REGION_ROLES:
+            warnings.append(
+                f"ocr_regions[{index}].role normalized from '{raw_role or 'missing'}' to 'other'"
+            )
+            role = "other"
+
+        text = str(item.get("text", "") or "").strip()
+        if not text:
+            warnings.append(f"ocr_regions[{index}] dropped because text is empty")
+            continue
+
+        raw_confidence = str(item.get("confidence", "medium") or "").strip().lower()
+        confidence = raw_confidence if raw_confidence in VALID_CONFIDENCE else "medium"
+        if raw_confidence and confidence != raw_confidence:
+            warnings.append(
+                f"ocr_regions[{index}].confidence normalized from '{raw_confidence}' to 'medium'"
+            )
+
+        normalized_regions.append(
+            OcrRegion(
+                role=role,
+                text=text,
+                bbox_hint=_normalize_bbox_hint(item.get("bbox_hint")),
+                confidence=confidence,
+            )
+        )
+    return normalized_regions
 
 
 def _normalize_caption_structured(

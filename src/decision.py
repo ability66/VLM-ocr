@@ -26,6 +26,8 @@ def decide_consensus(
     type_agreement = float(score_result.get("type_agreement", 0.0))
     caption_agreement = float(score_result.get("caption_agreement", 0.0))
     structure_agreement = float(score_result.get("structure_agreement", 0.0))
+    seal_agreement = float(score_result.get("seal_agreement", 1.0))
+    has_seal_regions = bool(score_result.get("has_seal_regions", False))
     overall_score = float(score_result.get("overall_score", 0.0))
     evidence_score = float(validation_result.evidence_score)
     validator_score = float(validation_result.validator_score)
@@ -68,12 +70,28 @@ def decide_consensus(
         reasons.append("less than half models succeeded")
         escalation_reasons.append("less_than_half_models_succeeded")
 
+    if has_seal_regions and decision != "failed":
+        if seal_agreement < 1.0:
+            decision = "review"
+            reasons.append("seal text agreement below strict acceptance threshold")
+            escalation_reasons.append("low_seal_agreement")
+
     if majority_type == "flowchart" and decision != "failed":
         if graph_fusion_result is None:
             decision = "review"
             reasons.append("flowchart result cannot be auto-accepted without graph fusion")
             escalation_reasons.append("flowchart_without_graph_fusion")
         else:
+            allow_partial_high_consensus_accept = _allows_high_consensus_partial_flowchart_accept(
+                graph_fusion_result=graph_fusion_result,
+                total_models=total_models,
+                success_count=success_count,
+                type_agreement=type_agreement,
+                structure_agreement=structure_agreement,
+                overall_score=overall_score,
+                evidence_score=evidence_score,
+                validator_score=validator_score,
+            )
             if graph_fusion_result.fusion_method == "mermaid_fallback":
                 decision = "review"
                 reasons.append("graph fusion used mermaid fallback instead of visual flowchart_graph")
@@ -86,7 +104,7 @@ def decide_consensus(
                 decision = "review"
                 reasons.append("visual graph alignment is ambiguous")
                 escalation_reasons.append("ambiguous_visual_graph_alignment")
-            elif graph_fusion_result.fusion_status == "partial":
+            elif graph_fusion_result.fusion_status == "partial" and not allow_partial_high_consensus_accept:
                 decision = "review"
                 reasons.append("visual graph fusion is only partial")
                 escalation_reasons.append("partial_visual_graph_alignment")
@@ -94,15 +112,18 @@ def decide_consensus(
                 decision = "review"
                 reasons.append("visual graph fusion failed")
                 escalation_reasons.append("graph_fusion_failed")
-            if graph_fusion_result.graph_confidence < 0.70:
+            if graph_fusion_result.graph_confidence < 0.70 and not allow_partial_high_consensus_accept:
                 decision = "review"
                 reasons.append("graph fusion confidence below acceptance threshold")
                 escalation_reasons.append("low_graph_confidence")
-            if graph_fusion_result.inconsistent_node_count > 0 or _has_inconsistent_node_count(graph_fusion_result):
+            if (
+                (graph_fusion_result.inconsistent_node_count > 0 or _has_inconsistent_node_count(graph_fusion_result))
+                and not allow_partial_high_consensus_accept
+            ):
                 decision = "review"
                 reasons.append("graph fusion has inconsistent node count across models")
                 escalation_reasons.append("inconsistent_node_count")
-            if _has_hard_node_alignment_errors(graph_fusion_result):
+            if _has_hard_node_alignment_errors(graph_fusion_result) and not allow_partial_high_consensus_accept:
                 decision = "review"
                 reasons.append("graph fusion contains node alignment errors")
                 escalation_reasons.append("node_alignment_errors")
@@ -114,7 +135,7 @@ def decide_consensus(
                 decision = "review"
                 reasons.append("fused graph has no edges")
                 escalation_reasons.append("empty_fused_edges")
-            if _has_many_low_support_edges(graph_fusion_result):
+            if _has_many_low_support_edges(graph_fusion_result) and not allow_partial_high_consensus_accept:
                 decision = "review"
                 reasons.append("graph fusion contains low-support edges")
                 escalation_reasons.append("low_support_edges")
@@ -134,6 +155,9 @@ def decide_consensus(
         if structure_agreement < thresholds["structure_agreement"]:
             reasons.append("structure agreement below acceptance threshold")
             escalation_reasons.append("low_structure_agreement")
+        if has_seal_regions and seal_agreement < 1.0:
+            reasons.append("seal agreement below acceptance threshold")
+            escalation_reasons.append("seal_agreement_below_threshold")
         if evidence_score < thresholds["evidence_score"]:
             reasons.append("evidence score below acceptance threshold")
             escalation_reasons.append("low_evidence_score")
@@ -158,6 +182,7 @@ def decide_consensus(
         type_agreement=type_agreement,
         caption_agreement=caption_agreement,
         structure_agreement=structure_agreement,
+        seal_agreement=seal_agreement,
         overall_score=overall_score,
         evidence_score=evidence_score,
         validator_score=validator_score,
@@ -270,3 +295,70 @@ def _has_hard_node_alignment_errors(graph_fusion_result: FusedGraphResult) -> bo
         or error.startswith("non_continuous_node_ids:")
         for error in graph_fusion_result.node_alignment_errors
     )
+
+
+def _allows_high_consensus_partial_flowchart_accept(
+    graph_fusion_result: FusedGraphResult,
+    total_models: int,
+    success_count: int,
+    type_agreement: float,
+    structure_agreement: float,
+    overall_score: float,
+    evidence_score: float,
+    validator_score: float,
+) -> bool:
+    if total_models < 3 or success_count != total_models:
+        return False
+    if graph_fusion_result.fusion_method != "visual_order":
+        return False
+    if graph_fusion_result.fusion_status != "partial":
+        return False
+    if graph_fusion_result.graph_confidence < 0.45:
+        return False
+    if type_agreement < 1.0 or structure_agreement < 0.90:
+        return False
+    if overall_score < 0.90 or evidence_score < 0.95 or validator_score < 0.95:
+        return False
+    if not graph_fusion_result.edges or graph_fusion_result.edge_alignment_errors:
+        return False
+    if graph_fusion_result.critical_errors:
+        return False
+    if graph_fusion_result.inconsistent_node_count > 1:
+        return False
+    if _has_non_position_hard_node_alignment_errors(graph_fusion_result):
+        return False
+    if len(_position_conflict_node_ids(graph_fusion_result)) > 1:
+        return False
+    if len(graph_fusion_result.low_text_consistency_nodes) > 4:
+        return False
+    if _low_support_edge_ratio(graph_fusion_result) > 0.40:
+        return False
+    return True
+
+
+def _has_non_position_hard_node_alignment_errors(graph_fusion_result: FusedGraphResult) -> bool:
+    return any(
+        error in {"node_id_set_mismatch", "non_continuous_selected_node_ids"}
+        or error.startswith("non_continuous_node_ids:")
+        for error in graph_fusion_result.node_alignment_errors
+    )
+
+
+def _position_conflict_node_ids(graph_fusion_result: FusedGraphResult) -> set[str]:
+    node_ids: set[str] = set()
+    for error in graph_fusion_result.node_alignment_errors:
+        if not error.startswith("node_position_conflict:"):
+            continue
+        parts = error.split(":")
+        if len(parts) >= 2 and parts[1]:
+            node_ids.add(parts[1])
+    return node_ids
+
+
+def _low_support_edge_ratio(graph_fusion_result: FusedGraphResult) -> float:
+    low_support_count = len(graph_fusion_result.low_support_edges)
+    fused_edge_count = len(graph_fusion_result.edges)
+    total_edge_claims = fused_edge_count + low_support_count
+    if total_edge_claims == 0:
+        return 1.0
+    return low_support_count / total_edge_claims

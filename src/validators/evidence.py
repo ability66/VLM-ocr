@@ -8,6 +8,7 @@ from src.validators.mermaid_validator import extract_mermaid_node_texts
 from src.validators.table_validator import parse_markdown_table
 
 _TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fffA-Za-z0-9_]+")
+SPECIAL_OCR_ROLES = {"seal", "watermark", "footer"}
 
 
 def collect_evidence_texts(labels: list[ParsedLabel]) -> list[str]:
@@ -15,6 +16,7 @@ def collect_evidence_texts(labels: list[ParsedLabel]) -> list[str]:
     for label in labels:
         evidence_texts.extend(label.visible_text)
         evidence_texts.extend(label.caption_structured.key_visible_text)
+        evidence_texts.extend(region.text for region in label.ocr_regions if str(region.text or "").strip())
         if label.caption_structured.visible_title.strip():
             evidence_texts.append(label.caption_structured.visible_title.strip())
         if label.caption_structured.main_subject.strip():
@@ -26,6 +28,9 @@ def extract_candidate_texts_from_label(label: ParsedLabel) -> list[str]:
     candidate_texts: list[str] = []
     if label.caption_structured.visible_title.strip():
         candidate_texts.append(label.caption_structured.visible_title.strip())
+    candidate_texts.extend(
+        region.text for region in label.ocr_regions if str(region.text or "").strip()
+    )
 
     structured = label.structured_label
     if structured.kind == "mermaid":
@@ -36,6 +41,35 @@ def extract_candidate_texts_from_label(label: ParsedLabel) -> list[str]:
         candidate_texts.extend(_extract_text_lines(structured.content))
 
     return _deduplicate_meaningful_texts(candidate_texts)
+
+
+def collect_ocr_region_role_pools(labels: list[ParsedLabel]) -> dict[str, list[str]]:
+    pools: dict[str, list[str]] = {}
+    for label in labels:
+        for region in label.ocr_regions:
+            role = str(region.role or "other").strip()
+            text = str(region.text or "").strip()
+            if not text:
+                continue
+            pools.setdefault(role, []).append(text)
+    return {
+        role: _deduplicate_meaningful_texts(texts)
+        for role, texts in pools.items()
+    }
+
+
+def extract_special_ocr_region_texts(label: ParsedLabel) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {role: [] for role in SPECIAL_OCR_ROLES}
+    for region in label.ocr_regions:
+        role = str(region.role or "other").strip()
+        text = str(region.text or "").strip()
+        if role not in SPECIAL_OCR_ROLES or not text:
+            continue
+        values[role].append(text)
+    return {
+        role: _deduplicate_meaningful_texts(texts)
+        for role, texts in values.items()
+    }
 
 
 def calculate_text_evidence_score(

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.graph_fusion import FusedGraphResult
+from src.seal_utils import is_stamp_mode, primary_seal_text, normalized_seal_text
 from src.schema import (
     CaptionStructured,
     ConsensusResult,
@@ -121,6 +122,7 @@ def build_summary_record(
     edge_vote_details = list(graph_fusion.get("edge_vote_details", []))
     low_support_edges = list(graph_fusion.get("low_support_edges", []))
     low_text_nodes = list(graph_fusion.get("low_text_consistency_nodes", []))
+    is_slim_seal_label = set(final_label.keys()) == {"caption"} and bool(final_label.get("caption", "").strip())
     return {
         "image_id": image_task.image_id,
         "file_name": image_task.file_name,
@@ -130,8 +132,8 @@ def build_summary_record(
         "validator_score": consensus.validator_score,
         "hallucination_risk": consensus.hallucination_risk,
         "accept_score": consensus.accept_score,
-        "image_type": final_label.get("image_type", "unknown"),
-        "structure_kind": final_label.get("structured_label", {}).get("kind", "none"),
+        "image_type": "seal" if is_slim_seal_label else final_label.get("image_type", "unknown"),
+        "structure_kind": "none" if is_slim_seal_label else final_label.get("structured_label", {}).get("kind", "none"),
         "final_label_status": final_label_status,
         "num_models": len(model_outputs),
         "num_success": num_success,
@@ -203,10 +205,16 @@ def build_final_label(
             "caption": "",
             "caption_structured": caption_structured.model_dump(),
             "structured_label": structured.model_dump(),
+            "ocr_regions": [],
         }
 
     labels = [label for _, label in paired]
     majority_type = _majority_choice([label.image_type for label in labels], default="unknown")
+    if is_stamp_mode(labels):
+        seal_caption = _select_primary_seal_caption(labels)
+        if seal_caption:
+            return {"caption": seal_caption}
+
     caption = _select_caption(paired=paired, majority_type=majority_type)
     caption_structured = _select_caption_structured(
         paired=paired,
@@ -240,6 +248,10 @@ def build_final_label(
         "caption": caption,
         "caption_structured": caption_structured.model_dump(),
         "structured_label": structured.model_dump(),
+        "ocr_regions": _select_ocr_regions(
+            paired=paired,
+            majority_type=majority_type,
+        ),
     }
 
 
@@ -303,6 +315,38 @@ def _select_structured_label(
             break
 
     return StructuredLabel(kind="text", content=fallback_content, format="plain_text")
+
+
+def _select_ocr_regions(
+    paired: list[tuple[ModelOutput, ParsedLabel]],
+    majority_type: str,
+) -> list[dict[str, Any]]:
+    primary_candidates = [
+        label.ocr_regions
+        for output, label in paired
+        if output.success and label.image_type == majority_type
+    ]
+    fallback_candidates = [label.ocr_regions for _, label in paired]
+
+    for candidates in (primary_candidates, fallback_candidates):
+        selected = _best_ocr_regions(candidates)
+        if selected:
+            return [region.model_dump() for region in selected]
+    return []
+
+
+def _select_primary_seal_caption(labels: list[ParsedLabel]) -> str:
+    candidates = [primary_seal_text(label) for label in labels if primary_seal_text(label)]
+    if not candidates:
+        return ""
+    counter = Counter(normalized_seal_text(candidate) for candidate in candidates if normalized_seal_text(candidate))
+    if not counter:
+        return ""
+    highest = counter.most_common(1)[0][1]
+    for candidate in candidates:
+        if counter[normalized_seal_text(candidate)] == highest:
+            return candidate
+    return candidates[0]
 
 
 def build_graph_fusion_payload(
@@ -394,6 +438,76 @@ def _caption_structured_score(value: CaptionStructured) -> int:
         + min(len(value.key_visible_text), 3)
         + int(bool(value.structure_summary.strip()))
     )
+
+
+def _best_ocr_regions(candidates: list[list[Any]]) -> list[Any]:
+    meaningful = [
+        regions for regions in candidates if any(str(region.text or "").strip() for region in regions)
+    ]
+    if not meaningful:
+        return []
+
+    signature_counts = Counter(_ocr_regions_signature(regions) for regions in meaningful)
+    best_count = max(signature_counts.values())
+    best_regions: list[Any] | None = None
+    best_score = -1
+    for regions in meaningful:
+        signature = _ocr_regions_signature(regions)
+        if signature_counts[signature] != best_count:
+            continue
+        score = _ocr_regions_score(regions)
+        if score > best_score:
+            best_regions = regions
+            best_score = score
+    return list(best_regions or [])
+
+
+def _ocr_regions_signature(regions: list[Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(region.role or "other").strip(),
+            normalized_seal_text(str(region.text or "")),
+        )
+        for region in sorted(regions, key=_ocr_region_sort_key)
+        if str(region.text or "").strip()
+    )
+
+
+def _ocr_regions_score(regions: list[Any]) -> int:
+    role_weights = {
+        "seal": 6,
+        "watermark": 4,
+        "footer": 4,
+        "title": 3,
+        "body": 2,
+        "other": 1,
+    }
+    score = 0
+    for region in regions:
+        text = str(region.text or "").strip()
+        if not text:
+            continue
+        score += role_weights.get(str(region.role or "other").strip(), 1)
+        score += int(bool(region.bbox_hint))
+        score += int(str(region.confidence or "medium").strip() == "high")
+    return score
+
+
+def _ocr_region_sort_key(region: Any) -> tuple[int, float, float, str]:
+    role_order = {
+        "seal": 0,
+        "watermark": 1,
+        "footer": 2,
+        "title": 3,
+        "body": 4,
+        "other": 5,
+    }
+    bbox = getattr(region, "bbox_hint", None)
+    top = float(bbox[1]) if isinstance(bbox, list) and len(bbox) == 4 else 2.0
+    left = float(bbox[0]) if isinstance(bbox, list) and len(bbox) == 4 else 2.0
+    role = str(getattr(region, "role", "other") or "other").strip()
+    text = str(getattr(region, "text", "") or "").strip()
+    return (role_order.get(role, 9), top, left, text)
 
 
 def _majority_choice(values: list[str], default: str) -> str:
