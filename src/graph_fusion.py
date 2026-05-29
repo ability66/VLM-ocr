@@ -357,6 +357,25 @@ def fuse_mermaid_outputs(
     edge_alignment_errors.extend(edge_errors)
     warnings.extend(edge_warnings)
 
+    (
+        fused_nodes,
+        fused_edges,
+        low_support_edges,
+        low_text_nodes,
+        node_alignment_errors,
+        edge_alignment_errors,
+        warnings,
+    ) = _prune_orphan_low_consistency_nodes(
+        fused_nodes=fused_nodes,
+        fused_edges=fused_edges,
+        low_support_edges=low_support_edges,
+        low_text_nodes=low_text_nodes,
+        node_alignment_errors=node_alignment_errors,
+        edge_alignment_errors=edge_alignment_errors,
+        warnings=warnings,
+        num_models=num_models,
+    )
+
     if num_models == 2 and any(error.startswith("node_position_conflict:") for error in node_alignment_errors):
         status_hint = "ambiguous"
 
@@ -977,6 +996,110 @@ def _fuse_edges(
     )
 
 
+def _prune_orphan_low_consistency_nodes(
+    fused_nodes: list[FusedVisualNode],
+    fused_edges: list[FusedVisualEdge],
+    low_support_edges: list[dict[str, Any]],
+    low_text_nodes: list[str],
+    node_alignment_errors: list[str],
+    edge_alignment_errors: list[str],
+    warnings: list[str],
+    num_models: int,
+) -> tuple[
+    list[FusedVisualNode],
+    list[FusedVisualEdge],
+    list[dict[str, Any]],
+    list[str],
+    list[str],
+    list[str],
+    list[str],
+]:
+    remaining_nodes = list(fused_nodes)
+    remaining_fused_edges = list(fused_edges)
+    remaining_low_support_edges = list(low_support_edges)
+    remaining_low_text_nodes = list(low_text_nodes)
+    remaining_node_alignment_errors = list(node_alignment_errors)
+    remaining_edge_alignment_errors = list(edge_alignment_errors)
+    remaining_warnings = list(warnings)
+
+    while True:
+        fused_edge_degree: Counter[str] = Counter()
+        for edge in remaining_fused_edges:
+            fused_edge_degree[edge.source] += 1
+            fused_edge_degree[edge.target] += 1
+
+        low_support_degree: Counter[str] = Counter()
+        for edge in remaining_low_support_edges:
+            source = str(edge.get("source", "") or "").strip()
+            target = str(edge.get("target", "") or "").strip()
+            if source:
+                low_support_degree[source] += 1
+            if target:
+                low_support_degree[target] += 1
+
+        candidate_ids = sorted(
+            [
+                node.fused_id
+                for node in remaining_nodes
+                if node.support_count < num_models
+                and node.text_consistency < 0.35
+                and fused_edge_degree.get(node.fused_id, 0) == 0
+                and low_support_degree.get(node.fused_id, 0) > 0
+            ],
+            key=_node_sort_key,
+        )
+        if not candidate_ids:
+            break
+
+        candidate_set = set(candidate_ids)
+        remaining_nodes = [
+            node for node in remaining_nodes if node.fused_id not in candidate_set
+        ]
+        remaining_fused_edges = [
+            edge
+            for edge in remaining_fused_edges
+            if edge.source not in candidate_set and edge.target not in candidate_set
+        ]
+        remaining_low_support_edges = [
+            edge
+            for edge in remaining_low_support_edges
+            if str(edge.get("source", "") or "").strip() not in candidate_set
+            and str(edge.get("target", "") or "").strip() not in candidate_set
+        ]
+        remaining_low_text_nodes = [
+            node_id for node_id in remaining_low_text_nodes if node_id not in candidate_set
+        ]
+        remaining_node_alignment_errors = [
+            entry
+            for entry in remaining_node_alignment_errors
+            if not _entry_mentions_any_node(entry, candidate_set)
+        ]
+        remaining_edge_alignment_errors = [
+            entry
+            for entry in remaining_edge_alignment_errors
+            if not _entry_mentions_any_node(entry, candidate_set)
+        ]
+        remaining_warnings = [
+            entry
+            for entry in remaining_warnings
+            if not _entry_mentions_any_node(entry, candidate_set)
+        ]
+        remaining_warnings.extend(
+            f"pruned_orphan_low_consistency_node:{node_id}" for node_id in candidate_ids
+        )
+
+    remaining_nodes.sort(key=lambda item: (item.order_index, item.fused_id))
+    return (
+        remaining_nodes,
+        remaining_fused_edges,
+        remaining_low_support_edges,
+        _deduplicate(remaining_low_text_nodes),
+        _deduplicate(remaining_node_alignment_errors),
+        _deduplicate(remaining_edge_alignment_errors),
+        _deduplicate(remaining_warnings),
+    )
+
+
 def _inspect_node_alignment(
     node_id: str,
     anchors: list[VisualNodeAnchor],
@@ -1442,6 +1565,19 @@ def _escape_mermaid_text(text: str) -> str:
 
 def _escape_mermaid_label(text: str) -> str:
     return _escape_mermaid_text(text).replace("|", "/")
+
+
+def _entry_mentions_any_node(entry: str, node_ids: set[str]) -> bool:
+    for node_id in node_ids:
+        if (
+            f":{node_id}:" in entry
+            or entry.endswith(f":{node_id}")
+            or f":{node_id}->" in entry
+            or entry.endswith(f"->{node_id}")
+            or f"<->{node_id}" in entry
+        ):
+            return True
+    return False
 
 
 def _deduplicate(values: list[str]) -> list[str]:

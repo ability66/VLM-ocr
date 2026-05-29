@@ -8,6 +8,7 @@ from src.graph_fusion import fuse_mermaid_outputs
 from src.normalizer import normalize_model_output
 from src.schema import CaptionStructured, ModelOutput, ParsedLabel, StructuredLabel
 from src.validators.validation import ValidationResult
+from src.writer import build_final_label_record
 
 
 def _flowchart_graph(
@@ -407,6 +408,49 @@ class GraphFusionTests(unittest.TestCase):
         self.assertEqual(consensus.decision, "accepted")
         self.assertNotIn("node_alignment_errors", consensus.escalation_reasons)
 
+    def test_orphan_low_consistency_tail_nodes_are_pruned(self) -> None:
+        nodes_a = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.4, 0.05, 0.6, 0.1], "shape": "rectangle", "text": "开始"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.4, 0.15, 0.6, 0.2], "shape": "rectangle", "text": "治疗"},
+            {"node_id": "N003", "order_index": 3, "row_index": 3, "col_index": 1, "bbox_hint": [0.4, 0.25, 0.6, 0.3], "shape": "rectangle", "text": "结束"},
+            {"node_id": "N004", "order_index": 4, "row_index": 4, "col_index": 1, "bbox_hint": [0.2, 0.35, 0.4, 0.4], "shape": "rectangle", "text": "多学科专家讨论"},
+        ]
+        nodes_b = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.42, 0.05, 0.62, 0.1], "shape": "rectangle", "text": "开始"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.42, 0.15, 0.62, 0.2], "shape": "rectangle", "text": "治疗"},
+            {"node_id": "N003", "order_index": 3, "row_index": 3, "col_index": 1, "bbox_hint": [0.42, 0.25, 0.62, 0.3], "shape": "rectangle", "text": "结束"},
+            {"node_id": "N004", "order_index": 4, "row_index": 4, "col_index": 2, "bbox_hint": [0.6, 0.35, 0.8, 0.4], "shape": "rectangle", "text": "不可切除"},
+        ]
+        nodes_c = [
+            {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.39, 0.05, 0.59, 0.1], "shape": "rectangle", "text": "开始"},
+            {"node_id": "N002", "order_index": 2, "row_index": 2, "col_index": 1, "bbox_hint": [0.39, 0.15, 0.59, 0.2], "shape": "rectangle", "text": "治疗"},
+            {"node_id": "N003", "order_index": 3, "row_index": 3, "col_index": 1, "bbox_hint": [0.39, 0.25, 0.59, 0.3], "shape": "rectangle", "text": "结束"},
+        ]
+        edges_a = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N002", "target": "N003", "label": ""},
+            {"source": "N003", "target": "N004", "label": ""},
+        ]
+        edges_b = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N002", "target": "N003", "label": ""},
+            {"source": "N002", "target": "N004", "label": ""},
+        ]
+        edges_c = [
+            {"source": "N001", "target": "N002", "label": ""},
+            {"source": "N002", "target": "N003", "label": ""},
+        ]
+        labels = [_label(nodes_a, edges_a), _label(nodes_b, edges_b), _label(nodes_c, edges_c)]
+        outputs = [_output("m1"), _output("m2"), _output("m3")]
+
+        result = fuse_mermaid_outputs(labels, outputs, ["开始", "治疗", "结束"])
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual([node.fused_id for node in result.nodes], ["N001", "N002", "N003"])
+        self.assertFalse(any(item["source"] == "N004" or item["target"] == "N004" for item in result.low_support_edges))
+        self.assertIn("pruned_orphan_low_consistency_node:N004", result.warnings)
+
     def test_depth_adjusted_reindex_stabilizes_leaf_nodes(self) -> None:
         nodes_a = [
             {"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": [0.4, 0.05, 0.6, 0.1], "shape": "rectangle", "text": "根"},
@@ -611,6 +655,46 @@ class GraphFusionTests(unittest.TestCase):
         )
         self.assertEqual(consensus.decision, "review")
         self.assertIn("flowchart_graph_missing_used_mermaid_fallback", consensus.escalation_reasons)
+
+    def test_build_final_label_record_is_slim(self) -> None:
+        final_label = {
+            "image_type": "flowchart",
+            "caption": "流程图",
+            "caption_structured": {"brief": "流程图"},
+            "structured_label": {"kind": "mermaid", "content": "flowchart TD\nN001[开始]"},
+        }
+        consensus = decide_consensus(
+            image_id="img-1",
+            labels=[
+                _label(
+                    nodes=[{"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"}],
+                    edges=[],
+                ),
+                _label(
+                    nodes=[{"node_id": "N001", "order_index": 1, "row_index": 1, "col_index": 1, "bbox_hint": None, "shape": "rectangle", "text": "开始"}],
+                    edges=[],
+                ),
+            ],
+            model_outputs=[_output("m1"), _output("m2")],
+            score_result=_score_result(),
+            validation_result=_validation_result(),
+            graph_fusion_result=None,
+        )
+        record = build_final_label_record(
+            image_task=type("ImageTaskLike", (), {"image_id": "img-1", "file_name": "figure.png"})(),
+            consensus=consensus,
+            final_label=final_label,
+            final_label_status="accepted",
+            graph_fusion={"enabled": True, "fusion_status": "fused", "graph_confidence": 0.91},
+        )
+
+        self.assertEqual(
+            set(record.keys()),
+            {"image_id", "file_name", "decision", "final_label_status", "final_label", "graph_fusion_status", "graph_confidence"},
+        )
+        self.assertEqual(record["image_id"], "img-1")
+        self.assertEqual(record["final_label_status"], "accepted")
+        self.assertEqual(record["graph_fusion_status"], "fused")
 
 
 if __name__ == "__main__":

@@ -17,16 +17,20 @@ from src.schema import (
 from src.validators.validation import ValidationResult
 
 
-def ensure_output_dirs(output_dir: Path) -> tuple[Path, Path]:
+def ensure_output_dirs(output_dir: Path) -> tuple[Path, Path, Path]:
     per_image_dir = output_dir / "per_image"
+    final_labels_dir = output_dir / "final_labels"
     output_dir.mkdir(parents=True, exist_ok=True)
     per_image_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir, per_image_dir
+    final_labels_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir, per_image_dir, final_labels_dir
 
 
 def clear_previous_outputs(output_dir: Path) -> None:
-    _, per_image_dir = ensure_output_dirs(output_dir)
+    _, per_image_dir, final_labels_dir = ensure_output_dirs(output_dir)
     for file_path in per_image_dir.glob("*.json"):
+        file_path.unlink()
+    for file_path in final_labels_dir.glob("*.json"):
         file_path.unlink()
     summary_path = output_dir / "summary.jsonl"
     if summary_path.exists():
@@ -48,7 +52,7 @@ def write_image_result(
     validation_result: ValidationResult,
     graph_fusion_result: FusedGraphResult | None = None,
 ) -> dict[str, Any]:
-    _, per_image_dir = ensure_output_dirs(output_dir)
+    _, per_image_dir, final_labels_dir = ensure_output_dirs(output_dir)
     final_label = build_final_label(
         normalized_results=normalized_results,
         model_outputs=model_outputs,
@@ -76,6 +80,18 @@ def write_image_result(
     output_path = per_image_dir / f"{image_task.image_id}.json"
     output_path.write_text(
         json.dumps(record, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    final_label_record = build_final_label_record(
+        image_task=image_task,
+        consensus=consensus,
+        final_label=final_label,
+        final_label_status=final_label_status,
+        graph_fusion=graph_fusion,
+    )
+    final_label_output_path = final_labels_dir / f"{image_task.image_id}.json"
+    final_label_output_path.write_text(
+        json.dumps(final_label_record, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return record
@@ -141,6 +157,27 @@ def build_summary_record(
         "graph_fusion_warnings": list(graph_fusion.get("warnings", [])),
         "graph_fusion_errors": list(graph_fusion.get("critical_errors", [])),
     }
+
+
+def build_final_label_record(
+    image_task: ImageTask,
+    consensus: ConsensusResult,
+    final_label: dict[str, Any],
+    final_label_status: str,
+    graph_fusion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    graph_fusion = graph_fusion or {"enabled": False}
+    record = {
+        "image_id": image_task.image_id,
+        "file_name": image_task.file_name,
+        "decision": consensus.decision,
+        "final_label_status": final_label_status,
+        "final_label": final_label,
+    }
+    if bool(graph_fusion.get("enabled", False)):
+        record["graph_fusion_status"] = graph_fusion.get("fusion_status", "failed")
+        record["graph_confidence"] = float(graph_fusion.get("graph_confidence", 0.0) or 0.0)
+    return record
 
 
 def build_final_label(

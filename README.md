@@ -122,11 +122,13 @@ No images found in data directory
 运行后会生成：
 
 - `outputs/per_image/{image_id}.json`
+- `outputs/final_labels/{image_id}.json`
 - `outputs/summary.jsonl`
 
 其中：
 
-- `per_image` 保存原始模型输出、归一化结果、验证结果、graph fusion 和最终标签
+- `per_image` 保存原始模型输出、归一化结果、验证结果、graph fusion 和最终标签，适合 debug
+- `final_labels` 保存精简后的目标交付 JSON，只保留最终标签和少量判定字段
 - `summary.jsonl` 保存筛选字段，适合后续人工 review
 
 ## 配置文件
