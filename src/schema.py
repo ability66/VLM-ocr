@@ -82,6 +82,8 @@ StructuredSource = Literal["model", "fused_graph", "none"]
 DecisionType = Literal["accepted", "review", "failed"]
 CaptionSource = Literal["generated"]
 CaptionConfidence = Literal["low", "medium", "high"]
+OcrRegionRole = Literal["seal", "watermark", "footer", "body", "title", "other"]
+OcrRegionConfidence = Literal["low", "medium", "high"]
 
 
 class ImageTask(BaseModel):
@@ -110,6 +112,13 @@ class CaptionStructured(BaseModel):
     confidence: CaptionConfidence = "medium"
 
 
+class OcrRegion(BaseModel):
+    role: OcrRegionRole = "other"
+    text: str = ""
+    bbox_hint: list[float] | None = None
+    confidence: OcrRegionConfidence = "medium"
+
+
 class ParsedLabel(BaseModel):
     image_type: ImageType = "unknown"
     caption: str = ""
@@ -117,6 +126,7 @@ class ParsedLabel(BaseModel):
     structured_label: StructuredLabel = Field(default_factory=StructuredLabel)
     flowchart_graph: dict[str, Any] | None = None
     visible_text: list[str] = Field(default_factory=list)
+    ocr_regions: list[OcrRegion] = Field(default_factory=list)
     uncertainty: str = ""
     warnings: list[str] = Field(default_factory=list)
 
@@ -138,6 +148,7 @@ class ConsensusResult(BaseModel):
     type_agreement: float
     caption_agreement: float
     structure_agreement: float
+    seal_agreement: float = 1.0
     overall_score: float
     evidence_score: float = 0.0
     validator_score: float = 0.0

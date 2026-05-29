@@ -7,11 +7,15 @@ from src.validators.caption_validator import validate_caption_structured
 from src.validators.evidence import (
     calculate_text_evidence_score,
     collect_evidence_texts,
+    collect_ocr_region_role_pools,
     extract_candidate_texts_from_label,
+    extract_special_ocr_region_texts,
+    normalize_text,
 )
 from src.validators.mermaid_validator import validate_mermaid
 from src.validators.table_validator import validate_table
 from src.validators.validation import ValidationResult
+from src.seal_utils import is_stamp_mode, primary_seal_signature, primary_seal_text
 
 
 def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResult:
@@ -27,6 +31,7 @@ def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResul
         )
 
     evidence_texts = collect_evidence_texts(labels)
+    ocr_region_role_pools = collect_ocr_region_role_pools(labels)
     critical_errors: list[str] = []
     warnings: list[str] = []
     evidence_scores: list[float] = []
@@ -38,6 +43,7 @@ def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResul
     majority_kind = _majority_value(
         [label.structured_label.kind for label in labels], default="none"
     )
+    stamp_mode = is_stamp_mode(labels)
 
     if majority_type == "flowchart" and majority_kind != "mermaid":
         critical_errors.append(
@@ -47,6 +53,10 @@ def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResul
         critical_errors.append(
             "majority image_type is chart/table but structured output is not table"
         )
+
+    ocr_errors, ocr_warnings, ocr_details = _validate_ocr_region_consensus(labels)
+    critical_errors.extend(ocr_errors)
+    warnings.extend(ocr_warnings)
 
     for index, label in enumerate(labels):
         label_detail = {
@@ -94,7 +104,7 @@ def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResul
             label_warnings.append(f"evidence validator error: {type(exc).__name__}: {exc}")
 
         try:
-            validator_result = _validate_structured_label(label)
+            validator_result = _validate_structured_label(label, stamp_mode=stamp_mode)
         except Exception as exc:
             validator_result = {
                 "valid_basic": False,
@@ -145,19 +155,30 @@ def validate_labels(image_id: str, labels: list[ParsedLabel]) -> ValidationResul
             "label_count": len(labels),
             "majority_image_type": majority_type,
             "majority_structured_kind": majority_kind,
+            "stamp_mode": stamp_mode,
             "image_type_counts": dict(Counter(label.image_type for label in labels)),
             "structured_kind_counts": dict(
                 Counter(label.structured_label.kind for label in labels)
             ),
             "evidence_text_pool": evidence_texts,
+            "ocr_region_role_pools": ocr_region_role_pools,
+            "ocr_region_consensus": ocr_details,
             "per_label": per_label_details,
         },
     )
 
 
-def _validate_structured_label(label: ParsedLabel) -> dict:
+def _validate_structured_label(label: ParsedLabel, stamp_mode: bool = False) -> dict:
     kind = label.structured_label.kind
     content = label.structured_label.content
+
+    if stamp_mode:
+        return {
+            "valid_basic": True,
+            "errors": [],
+            "warnings": [],
+            "score": 1.0,
+        }
 
     if kind == "mermaid":
         return validate_mermaid(content=content, image_type=label.image_type)
@@ -224,6 +245,77 @@ def _deduplicate(values: list[str]) -> list[str]:
         seen.add(value)
         ordered.append(value)
     return ordered
+
+
+def _validate_ocr_region_consensus(
+    labels: list[ParsedLabel],
+) -> tuple[list[str], list[str], dict]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    seal_signatures = [primary_seal_signature(label) for label in labels]
+    has_any_seal = any(signature for signature in seal_signatures)
+
+    if has_any_seal:
+        if any(not signature for signature in seal_signatures):
+            errors.append("primary seal text is missing in some model outputs")
+
+        unique_signatures = {
+            signature for signature in seal_signatures if signature
+        }
+        if len(unique_signatures) > 1:
+            errors.append("primary seal texts are inconsistent across model outputs")
+
+    text_role_map: dict[str, set[str]] = {}
+    for label in labels:
+        special_regions = extract_special_ocr_region_texts(label)
+        for role, texts in special_regions.items():
+            for text in texts:
+                normalized = normalize_text(text)
+                if not normalized:
+                    continue
+                text_role_map.setdefault(normalized, set()).add(role)
+
+    role_conflicts = sorted(
+        normalized_text
+        for normalized_text, roles in text_role_map.items()
+        if "seal" in roles and len(roles) > 1
+    )
+    if role_conflicts:
+        errors.append("seal texts conflict with watermark/footer roles across model outputs")
+
+    for label in labels:
+        special_regions = extract_special_ocr_region_texts(label)
+        if special_regions["seal"] and special_regions["watermark"]:
+            overlap = {
+                normalize_text(text)
+                for text in special_regions["seal"]
+            } & {
+                normalize_text(text)
+                for text in special_regions["watermark"]
+            }
+            if overlap:
+                warnings.append("same text appears in both seal and watermark regions in one model output")
+        if special_regions["seal"] and special_regions["footer"]:
+            overlap = {
+                normalize_text(text)
+                for text in special_regions["seal"]
+            } & {
+                normalize_text(text)
+                for text in special_regions["footer"]
+            }
+            if overlap:
+                warnings.append("same text appears in both seal and footer regions in one model output")
+
+    return (
+        _deduplicate(errors),
+        _deduplicate(warnings),
+        {
+            "has_any_seal": has_any_seal,
+            "seal_signatures": [[signature] if signature else [] for signature in seal_signatures],
+            "primary_seal_texts": [primary_seal_text(label) for label in labels],
+            "role_conflicts": role_conflicts,
+        },
+    )
 
 
 __all__ = ["ValidationResult", "validate_labels"]

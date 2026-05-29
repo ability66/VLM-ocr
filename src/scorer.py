@@ -6,6 +6,7 @@ from collections import Counter
 from itertools import combinations
 
 from src.schema import ModelOutput, ParsedLabel
+from src.seal_utils import is_stamp_mode, primary_seal_signature
 
 TITLE_PREFIX_PATTERN = re.compile(
     r"^(?:(图|表)\s*\d+|(?:figure|table|chart)\s*\d+)\s*[:：.．\-]?\s*",
@@ -29,12 +30,20 @@ def score_consensus(
         }
 
     type_agreement = _majority_ratio([label.image_type for label in labels])
-    caption_agreement = _caption_agreement(labels)
-    structure_agreement = _structure_agreement(labels)
+    stamp_mode = is_stamp_mode(labels)
+    seal_agreement = _seal_agreement(labels)
+    has_seal_regions = bool(any(primary_seal_signature(label) for label in labels))
 
-    overall_score = (
-        0.3 * type_agreement + 0.3 * caption_agreement + 0.4 * structure_agreement
-    )
+    if stamp_mode:
+        caption_agreement = seal_agreement
+        structure_agreement = 1.0
+        overall_score = 0.3 * type_agreement + 0.7 * seal_agreement
+    else:
+        caption_agreement = _caption_agreement(labels)
+        structure_agreement = _structure_agreement(labels)
+        overall_score = (
+            0.3 * type_agreement + 0.3 * caption_agreement + 0.4 * structure_agreement
+        )
 
     if len(labels) == 1:
         reasons.append("only one parsable label")
@@ -42,8 +51,10 @@ def score_consensus(
         reasons.append("low image_type agreement")
     if caption_agreement < 0.5 and len(labels) > 1:
         reasons.append("low caption agreement")
-    if structure_agreement < 0.5 and len(labels) > 1:
+    if not stamp_mode and structure_agreement < 0.5 and len(labels) > 1:
         reasons.append("low structured output agreement")
+    if has_seal_regions and seal_agreement < 1.0 and len(labels) > 1:
+        reasons.append("low seal agreement")
     if sum(1 for output in model_outputs if output.success) == 0:
         reasons.append("no models succeeded")
 
@@ -51,6 +62,9 @@ def score_consensus(
         "type_agreement": round(type_agreement, 4),
         "caption_agreement": round(caption_agreement, 4),
         "structure_agreement": round(structure_agreement, 4),
+        "seal_agreement": round(seal_agreement, 4),
+        "has_seal_regions": has_seal_regions,
+        "stamp_mode": stamp_mode,
         "overall_score": round(overall_score, 4),
         "reasons": reasons,
     }
@@ -170,6 +184,13 @@ def _can_use_structured_caption(labels: list[ParsedLabel]) -> bool:
     return any(_has_meaningful_caption_structured(value) for value in caption_structured_values)
 
 
+def _seal_agreement(labels: list[ParsedLabel]) -> float:
+    seal_signatures = [primary_seal_signature(label) for label in labels]
+    if not any(seal_signatures):
+        return 1.0
+    return _average_pairwise(seal_signatures, _signature_exact_match)
+
+
 def _has_meaningful_caption_structured(value: object) -> bool:
     brief = str(getattr(value, "brief", "") or "").strip()
     visual_type = str(getattr(value, "visual_type", "") or "").strip()
@@ -196,6 +217,14 @@ def _average_pairwise(values: list[object], similarity_fn) -> float:
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
+
+
+def _signature_exact_match(left: tuple[str, ...], right: tuple[str, ...]) -> float:
+    if not left and not right:
+        return 0.5
+    if not left or not right:
+        return 0.0
+    return 1.0 if left == right else 0.0
 
 
 def _text_similarity(left: str, right: str) -> float:
